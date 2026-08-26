@@ -17,7 +17,12 @@ from google.oauth2.credentials import (  # type: ignore[import-untyped]
 )
 from jinja2 import Environment
 
-from app.birthday_rules import Clock, build_clock, is_birthday_today, parse_birthday
+from app.reminder_rules import (
+    Clock,
+    build_clock,
+    is_reminder_due_today,
+    parse_reminder_date,
+)
 from app.config import Config
 from app.email.base import (
     AmbiguousSendError,
@@ -73,7 +78,7 @@ class Summary:
     ambiguous: int = 0
 
 
-def run_birthday_job(
+def run_reminder_job(
     config: Config,
     *,
     spreadsheet_provider: SpreadsheetProvider | None = None,
@@ -105,9 +110,11 @@ def run_birthday_job(
             clients.append(client)
 
         matched_clients = [
-            client for client in clients if is_birthday_today(client.birthday, today)
+            client
+            for client in clients
+            if is_reminder_due_today(client.reminder_date, today)
         ]
-        LOGGER.info("birthdays detected: count=%d", len(matched_clients))
+        LOGGER.info("reminders detected: count=%d", len(matched_clients))
 
         summary = Summary(
             inspected=len(rows),
@@ -281,15 +288,15 @@ def _parse_client_row(
         LOGGER.warning("row %d skipped: missing or invalid email", row_index)
         return None
 
-    birthday = parse_birthday(row.get(config.birthday_column))
-    if birthday is None:
-        LOGGER.warning("row %d skipped: missing or invalid birthday", row_index)
+    reminder_date = parse_reminder_date(row.get(config.birthday_column))
+    if reminder_date is None:
+        LOGGER.warning("row %d skipped: missing or invalid reminder date", row_index)
         return None
 
     return Client(
         name=name,
         email=normalized_email,
-        birthday=birthday,
+        reminder_date=reminder_date,
         row_index=row_index,
         last_sent_year=_parse_last_sent_year(row.get(config.last_sent_year_column)),
         last_name=_parse_name(row.get(config.last_name_column)),
@@ -363,7 +370,7 @@ def _contains_bp_service_line(raw: object) -> bool:
 def _resolve_delivery_route(raw_service_line: object) -> DeliveryRoute:
     if _contains_bp_service_line(raw_service_line):
         return "bp_call_reminder"
-    return "birthday_email"
+    return "standard_reminder"
 
 
 def _parse_last_sent_year(raw: object) -> int | None:
@@ -406,7 +413,7 @@ def _sniff_image_mime_type(path: Path) -> str:
         return "image/jpeg"
     if suffix == ".png":
         return "image/png"
-    raise ValueError(f"Unsupported birthday image file extension: {path.suffix}")
+    raise ValueError(f"Unsupported reminder image file extension: {path.suffix}")
 
 
 def _process_match(
@@ -430,8 +437,8 @@ def _process_match(
     try:
         claim_result = state_store.claim(
             client.email,
-            client.birthday.month,
-            client.birthday.day,
+            client.reminder_date.month,
+            client.reminder_date.day,
             today_year,
         )
         if claim_result.outcome == ClaimOutcome.ALREADY_SENT:
@@ -459,7 +466,7 @@ def _process_match(
             state_store.mark_sent(claim_result.claim_id, claim_result.lease_token)
         except Exception:
             LOGGER.critical(
-                "birthday email was sent to %s, but the state store could not durably record it; a future reclaim could send a duplicate email, so verify the mailbox manually",
+                "standard reminder was sent to %s, but the state store could not durably record it; a future reclaim could send a duplicate email, so verify the mailbox manually",
                 client.email,
                 exc_info=True,
             )
@@ -484,7 +491,7 @@ def _process_match(
                     "failed to mark claim as failed for %s after an email send failure",
                     client.email,
                 )
-        LOGGER.exception("birthday email failed for %s", client.email)
+        LOGGER.exception("standard reminder failed for %s", client.email)
         return _with_increment(summary, failed=1)
     except Exception:
         if (
@@ -519,7 +526,7 @@ def _render_message(
             subject_env=subject_env,
         )
 
-    return _render_birthday_email(
+    return _render_standard_reminder(
         config=config,
         client=client,
         html_env=html_env,
@@ -528,7 +535,7 @@ def _render_message(
     )
 
 
-def _render_birthday_email(
+def _render_standard_reminder(
     *,
     config: Config,
     client: Client,
@@ -576,7 +583,7 @@ def _render_bp_call_reminder(
 ) -> EmailMessage:
     template_context = {
         "display_name": client.display_name,
-        "birthday_date": _format_birthday_date(client.birthday),
+        "birthday_date": _format_reminder_date(client.reminder_date),
         "mobile_phone": client.mobile_phone or "No disponible",
         "bp_status": BP_STATUS_LABEL,
         "bp_follow_up_text": BP_FOLLOW_UP_TEXT,
@@ -601,7 +608,7 @@ def _render_bp_call_reminder(
     )
 
 
-def _format_birthday_date(value: date) -> str:
+def _format_reminder_date(value: date) -> str:
     return value.isoformat()
 
 
@@ -611,14 +618,14 @@ def _log_dry_run(config: Config, client: Client) -> None:
         if config.bp_reminder_recipients.cc_emails:
             cc_suffix = f" (cc: {', '.join(config.bp_reminder_recipients.cc_emails)})"
         LOGGER.info(
-            "[DRY RUN] would send BP birthday call reminder for %s to %s%s",
+            "[DRY RUN] would send BP call reminder for %s to %s%s",
             client.display_name,
             config.bp_reminder_recipients.to_email,
             cc_suffix,
         )
         return
     LOGGER.info(
-        "[DRY RUN] would send birthday email to %s (%s)",
+        "[DRY RUN] would send standard reminder to %s (%s)",
         client.email,
         client.name,
     )
@@ -630,13 +637,13 @@ def _log_sent_message(client: Client, message: EmailMessage) -> None:
         if message.cc_emails:
             cc_suffix = f" (cc: {', '.join(message.cc_emails)})"
         LOGGER.info(
-            "BP birthday call reminder sent for %s to %s%s",
+            "BP call reminder sent for %s to %s%s",
             client.email,
             message.to_email,
             cc_suffix,
         )
         return
-    LOGGER.info("birthday email sent to %s", client.email)
+    LOGGER.info("standard reminder sent to %s", client.email)
 
 
 def _with_increment(

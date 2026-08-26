@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from app.birthday_rules import FixedClock
-from app.birthday_service import (
+from app.reminder_rules import FixedClock
+from app.reminder_service import (
     Summary,
     build_email_provider,
     build_spreadsheet_provider,
-    run_birthday_job,
+    run_reminder_job,
 )
 from app.config import Config, ConfigError
 from app.email_content import (
@@ -36,11 +36,11 @@ from app.spreadsheet.base import SpreadsheetProvider
 from app.state.sqlite import ClaimOutcome, ClaimResult, LeaseLostError
 
 
-def test_birthday_today_claims_and_sends(caplog: pytest.LogCaptureFixture) -> None:
+def test_reminder_today_claims_and_sends(caplog: pytest.LogCaptureFixture) -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
-                name="Test Person", email="test.person@example.com", birthday="1/1/2000"
+                name="Test Person", email="test.person@example.com", reminder_date="1/1/2000"
             )
         ]
     )
@@ -48,7 +48,7 @@ def test_birthday_today_claims_and_sends(caplog: pytest.LogCaptureFixture) -> No
     email_provider = FakeEmailProvider()
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             _build_config(),
             spreadsheet_provider=provider,
             state_store=store,
@@ -60,23 +60,23 @@ def test_birthday_today_claims_and_sends(caplog: pytest.LogCaptureFixture) -> No
     assert store.claim_calls == [("test.person@example.com", 1, 1, 2026)]
     assert store.mark_sent_calls == [(101, "lease-101")]
     assert email_provider.sent_messages[0].to_email == "test.person@example.com"
-    assert "birthday email sent to test.person@example.com" in caplog.text
+    assert "standard reminder sent to test.person@example.com" in caplog.text
 
 
-def test_birthday_email_uses_display_name_in_subject_when_last_name_present() -> None:
+def test_reminder_email_uses_display_name_in_subject_when_last_name_present() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="Test",
                 last_name="Person",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
             )
         ]
     )
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -94,19 +94,19 @@ def test_birthday_email_uses_display_name_in_subject_when_last_name_present() ->
     assert "Test" in sent_message.text_body
 
 
-def test_birthday_email_uses_first_name_only_when_last_name_missing() -> None:
+def test_reminder_email_uses_first_name_only_when_last_name_missing() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="Test",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
             )
         ]
     )
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -119,14 +119,14 @@ def test_birthday_email_uses_first_name_only_when_last_name_missing() -> None:
     assert "Test Person" not in sent_message.subject
 
 
-def test_birthday_email_subject_template_can_use_display_name() -> None:
+def test_reminder_email_subject_template_can_use_display_name() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="Test",
                 last_name="Person",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
             )
         ]
     )
@@ -137,7 +137,7 @@ def test_birthday_email_subject_template_can_use_display_name() -> None:
         email_subject_template="¡Feliz cumpleaños, {{ display_name }}! 🎉",
     )
 
-    run_birthday_job(
+    run_reminder_job(
         config,
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -149,20 +149,20 @@ def test_birthday_email_subject_template_can_use_display_name() -> None:
     assert sent_message.subject == "¡Feliz cumpleaños, Test Person! 🎉"
 
 
-def test_birthday_email_normalizes_whitespace_in_name() -> None:
+def test_reminder_email_normalizes_whitespace_in_name() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="  Test  ",
                 last_name="  Person  ",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
             )
         ]
     )
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -173,20 +173,20 @@ def test_birthday_email_normalizes_whitespace_in_name() -> None:
     assert email_provider.sent_messages[0].to_name == "Test"
 
 
-def test_birthday_email_uses_estimada_salutation_for_female_gender() -> None:
+def test_reminder_email_uses_estimada_salutation_for_female_gender() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="Test Person",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
                 gender="Femenino",
             )
         ]
     )
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -198,20 +198,20 @@ def test_birthday_email_uses_estimada_salutation_for_female_gender() -> None:
     assert DEFAULT_SALUTATION not in email_provider.sent_messages[0].html_body
 
 
-def test_birthday_email_uses_estimado_salutation_for_male_gender() -> None:
+def test_reminder_email_uses_estimado_salutation_for_male_gender() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="Test Person",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
                 gender="Masculino",
             )
         ]
     )
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -224,19 +224,19 @@ def test_birthday_email_uses_estimado_salutation_for_male_gender() -> None:
     assert DEFAULT_SALUTATION not in html_body
 
 
-def test_birthday_email_defaults_salutation_when_gender_missing() -> None:
+def test_reminder_email_defaults_salutation_when_gender_missing() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="Test Person",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
             )
         ]
     )
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -247,20 +247,20 @@ def test_birthday_email_defaults_salutation_when_gender_missing() -> None:
     assert DEFAULT_SALUTATION in email_provider.sent_messages[0].html_body
 
 
-def test_birthday_email_defaults_salutation_when_gender_unknown() -> None:
+def test_reminder_email_defaults_salutation_when_gender_unknown() -> None:
     provider = FakeSpreadsheetProvider(
         rows=[
             _row(
                 name="Test Person",
                 email="test.person@example.com",
-                birthday="1/1/2000",
+                reminder_date="1/1/2000",
                 gender="Nonbinary",
             )
         ]
     )
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=provider,
         state_store=FakeStateStore(),
@@ -272,14 +272,14 @@ def test_birthday_email_defaults_salutation_when_gender_unknown() -> None:
 
 
 def test_invalid_gender_value_does_not_invalidate_row() -> None:
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Test Person",
                     email="test.person@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     gender=12345,
                 )
             ]
@@ -292,15 +292,15 @@ def test_invalid_gender_value_does_not_invalidate_row() -> None:
     assert summary == Summary(inspected=1, matched=1, sent=1)
 
 
-def test_no_birthday_today_has_clean_zero_send_summary() -> None:
-    summary = run_birthday_job(
+def test_no_reminder_due_today_has_clean_zero_send_summary() -> None:
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Test Person",
                     email="test.person@example.com",
-                    birthday="1/2/2000",
+                    reminder_date="1/2/2000",
                 )
             ]
         ),
@@ -312,24 +312,24 @@ def test_no_birthday_today_has_clean_zero_send_summary() -> None:
     assert summary == Summary(inspected=1)
 
 
-def test_multiple_birthdays_are_processed_independently() -> None:
+def test_multiple_reminders_are_processed_independently() -> None:
     store = FakeStateStore()
     email_provider = FakeEmailProvider()
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
-                    name="Test Person One", email="one@example.com", birthday="1/1/2000"
+                    name="Test Person One", email="one@example.com", reminder_date="1/1/2000"
                 ),
                 _row(
-                    name="Test Person Two", email="two@example.com", birthday="1/1/1999"
+                    name="Test Person Two", email="two@example.com", reminder_date="1/1/1999"
                 ),
                 _row(
                     name="Test Person Three",
                     email="three@example.com",
-                    birthday="1/2/1998",
+                    reminder_date="1/2/1998",
                 ),
             ]
         ),
@@ -350,7 +350,7 @@ def test_bp_client_sends_internal_reminder_instead_of_client_email() -> None:
     store = FakeStateStore()
     email_provider = FakeEmailProvider()
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
@@ -358,7 +358,7 @@ def test_bp_client_sends_internal_reminder_instead_of_client_email() -> None:
                     name="Test",
                     last_name="Person",
                     email="test.person@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     service_line="BP",
                     mobile_phone="+52 55 1234 5678",
                 )
@@ -397,14 +397,14 @@ def test_bp_service_line_detection_handles_delimiters_whitespace_and_case(
 ) -> None:
     email_provider = FakeEmailProvider()
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Delimiter Test",
                     email="delimiter@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     service_line=service_line,
                 )
             ]
@@ -418,10 +418,10 @@ def test_bp_service_line_detection_handles_delimiters_whitespace_and_case(
     assert email_provider.sent_messages[0].to_email == BP_REMINDER_TO_ADDRESS_DEFAULT
 
 
-def test_non_bp_clients_keep_standard_birthday_email_path() -> None:
+def test_non_bp_clients_keep_standard_reminder_path() -> None:
     email_provider = FakeEmailProvider()
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
@@ -429,7 +429,7 @@ def test_non_bp_clients_keep_standard_birthday_email_path() -> None:
                     name="Standard",
                     last_name="Client",
                     email="standard.client@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     gender="Femenino",
                     service_line="Vida;GMM",
                 )
@@ -451,7 +451,7 @@ def test_non_bp_clients_keep_standard_birthday_email_path() -> None:
 def test_bp_client_adds_single_configured_cc_recipient() -> None:
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         replace(
             _build_config(),
             bp_reminder_recipients=BPReminderRecipients(
@@ -464,7 +464,7 @@ def test_bp_client_adds_single_configured_cc_recipient() -> None:
                     name="Single",
                     last_name="Cc",
                     email="single.cc@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     service_line="BP",
                 )
             ]
@@ -480,7 +480,7 @@ def test_bp_client_adds_single_configured_cc_recipient() -> None:
 def test_bp_client_adds_multiple_configured_cc_recipients() -> None:
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         replace(
             _build_config(),
             bp_reminder_recipients=BPReminderRecipients(
@@ -496,7 +496,7 @@ def test_bp_client_adds_multiple_configured_cc_recipients() -> None:
                     name="Multiple",
                     last_name="Cc",
                     email="multiple.cc@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     service_line="BP",
                 )
             ]
@@ -529,14 +529,14 @@ def test_bp_reminder_normalizes_mobile_phone_for_display(
 ) -> None:
     email_provider = FakeEmailProvider()
 
-    run_birthday_job(
+    run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="No Phone",
                     email="no.phone@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     service_line="BP",
                     mobile_phone=mobile_phone,
                 )
@@ -569,14 +569,14 @@ def test_duplicate_prevention_applies_to_bp_and_standard_paths(
     )
     email_provider = FakeEmailProvider()
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Idempotent",
                     email="idempotent@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                     service_line=service_line,
                 )
             ]
@@ -599,23 +599,23 @@ def test_invalid_rows_are_skipped_and_do_not_block_valid_rows(
     email_provider = FakeEmailProvider()
 
     with caplog.at_level(logging.WARNING):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             _build_config(),
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Valid Person",
                         email="valid@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     ),
                     _row(
                         name="Bad Birthday",
                         email="bad.birthday@example.com",
-                        birthday="not-a-date",
+                        reminder_date="not-a-date",
                     ),
-                    _row(name="No Email", email="", birthday="1/1/2000"),
+                    _row(name="No Email", email="", reminder_date="1/1/2000"),
                     {"Email": "missing.name@example.com", "Birthday": "1/1/2000"},
-                    _row(name="Bad Email", email="not-an-email", birthday="1/1/2000"),
+                    _row(name="Bad Email", email="not-an-email", reminder_date="1/1/2000"),
                 ]
             ),
             state_store=store,
@@ -625,7 +625,7 @@ def test_invalid_rows_are_skipped_and_do_not_block_valid_rows(
 
     assert summary == Summary(inspected=5, matched=1, sent=1, invalid=4)
     assert len(email_provider.sent_messages) == 1
-    assert "row 3 skipped: missing or invalid birthday" in caplog.text
+    assert "row 3 skipped: missing or invalid reminder date" in caplog.text
     assert "row 4 skipped: missing or invalid email" in caplog.text
     assert "row 5 skipped: missing name" in caplog.text
     assert "row 6 skipped: missing or invalid email" in caplog.text
@@ -637,14 +637,14 @@ def test_dry_run_does_not_claim_or_send(caplog: pytest.LogCaptureFixture) -> Non
     email_provider = FakeEmailProvider()
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             config,
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Test Person",
                         email="test.person@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     )
                 ]
             ),
@@ -659,7 +659,7 @@ def test_dry_run_does_not_claim_or_send(caplog: pytest.LogCaptureFixture) -> Non
     assert store.mark_failed_calls == []
     assert email_provider.sent_messages == []
     assert (
-        "[DRY RUN] would send birthday email to test.person@example.com (Test Person)"
+        "[DRY RUN] would send standard reminder to test.person@example.com (Test Person)"
         in caplog.text
     )
 
@@ -672,14 +672,14 @@ def test_dry_run_bp_route_does_not_claim_or_send(
     email_provider = FakeEmailProvider()
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             config,
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="BP Dry Run",
                         email="bp.dry.run@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                         service_line=" bp ",
                     )
                 ]
@@ -693,7 +693,7 @@ def test_dry_run_bp_route_does_not_claim_or_send(
     assert store.claim_calls == []
     assert email_provider.sent_messages == []
     assert (
-        "[DRY RUN] would send BP birthday call reminder for BP Dry Run to "
+        "[DRY RUN] would send BP call reminder for BP Dry Run to "
         f"{BP_REMINDER_TO_ADDRESS_DEFAULT}"
     ) in caplog.text
 
@@ -702,18 +702,18 @@ def test_dry_run_with_matching_rows_does_not_build_email_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.birthday_service.build_email_provider",
+        "app.reminder_service.build_email_provider",
         lambda config: pytest.fail("build_email_provider should not be called"),
     )
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(dry_run=True),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Dry Run Person",
                     email="dry.run@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 )
             ]
         ),
@@ -731,16 +731,16 @@ def test_dry_run_with_matching_rows_skips_state_store_construction(
         def __init__(self, db_path: Path, stale_claim_timeout_minutes: int) -> None:
             raise RuntimeError("synthetic state store construction failure")
 
-    monkeypatch.setattr("app.birthday_service.StateStore", FailingStateStore)
+    monkeypatch.setattr("app.reminder_service.StateStore", FailingStateStore)
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(dry_run=True),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Dry Run Person",
                     email="dry.run@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 )
             ]
         ),
@@ -760,14 +760,14 @@ def test_dry_run_with_matching_rows_skips_local_image_loading(
     )
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             config,
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Dry Run Person",
                         email="dry.run@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     )
                 ]
             ),
@@ -777,7 +777,7 @@ def test_dry_run_with_matching_rows_skips_local_image_loading(
 
     assert summary == Summary(inspected=1, matched=1)
     assert (
-        "[DRY RUN] would send birthday email to dry.run@example.com (Dry Run Person)"
+        "[DRY RUN] would send standard reminder to dry.run@example.com (Dry Run Person)"
         in caplog.text
     )
 
@@ -786,18 +786,18 @@ def test_zero_matching_birthdays_does_not_build_email_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.birthday_service.build_email_provider",
+        "app.reminder_service.build_email_provider",
         lambda config: pytest.fail("build_email_provider should not be called"),
     )
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="No Match Person",
                     email="no.match@example.com",
-                    birthday="1/2/2000",
+                    reminder_date="1/2/2000",
                 )
             ]
         ),
@@ -815,16 +815,16 @@ def test_zero_matching_birthdays_skip_state_store_construction(
         def __init__(self, db_path: Path, stale_claim_timeout_minutes: int) -> None:
             raise RuntimeError("synthetic state store construction failure")
 
-    monkeypatch.setattr("app.birthday_service.StateStore", FailingStateStore)
+    monkeypatch.setattr("app.reminder_service.StateStore", FailingStateStore)
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="No Match Person",
                     email="no.match@example.com",
-                    birthday="1/2/2000",
+                    reminder_date="1/2/2000",
                 )
             ]
         ),
@@ -835,7 +835,7 @@ def test_zero_matching_birthdays_skip_state_store_construction(
 
 
 def test_zero_matching_birthdays_skip_local_image_loading() -> None:
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(
             birthday_image_mode="local",
             birthday_image_path=Path("synthetic-missing-image.gif"),
@@ -845,7 +845,7 @@ def test_zero_matching_birthdays_skip_local_image_loading() -> None:
                 _row(
                     name="No Match Person",
                     email="no.match@example.com",
-                    birthday="1/2/2000",
+                    reminder_date="1/2/2000",
                 )
             ]
         ),
@@ -872,17 +872,17 @@ def test_real_matches_build_and_close_state_store_once(
         def close(self) -> None:
             self.close_calls += 1
 
-    monkeypatch.setattr("app.birthday_service.StateStore", TrackingStateStore)
+    monkeypatch.setattr("app.reminder_service.StateStore", TrackingStateStore)
 
     email_provider = FakeEmailProvider()
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Match One",
                     email="match.one@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 )
             ]
         ),
@@ -910,22 +910,22 @@ def test_real_matches_build_email_provider_once_and_reuse_it(
         return fake_mailer
 
     monkeypatch.setattr(
-        "app.birthday_service.build_email_provider", fake_build_email_provider
+        "app.reminder_service.build_email_provider", fake_build_email_provider
     )
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Match One",
                     email="match.one@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 ),
                 _row(
                     name="Match Two",
                     email="match.two@example.com",
-                    birthday="1/1/1999",
+                    reminder_date="1/1/1999",
                 ),
             ]
         ),
@@ -960,7 +960,7 @@ def test_real_matches_load_local_image_once_and_reuse_it(
     monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
 
     email_provider = FakeEmailProvider()
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(
             birthday_image_mode="local",
             birthday_image_path=image_path,
@@ -970,12 +970,12 @@ def test_real_matches_load_local_image_once_and_reuse_it(
                 _row(
                     name="Match One",
                     email="match.one@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 ),
                 _row(
                     name="Match Two",
                     email="match.two@example.com",
-                    birthday="1/1/1999",
+                    reminder_date="1/1/1999",
                 ),
             ]
         ),
@@ -996,14 +996,14 @@ def test_real_matches_load_local_image_once_and_reuse_it(
 
 def test_test_date_clock_is_used_instead_of_real_date() -> None:
     config = _build_config(test_date=date(2026, 2, 14))
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         config,
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Valentine Test",
                     email="valentine@example.com",
-                    birthday="2/14/2000",
+                    reminder_date="2/14/2000",
                 )
             ]
         ),
@@ -1019,7 +1019,7 @@ def test_spreadsheet_mode_selection_google_sheet(
 ) -> None:
     google_provider = FakeSpreadsheetProvider(rows=[])
     monkeypatch.setattr(
-        "app.birthday_service.GoogleSheetsProvider.from_credentials",
+        "app.reminder_service.GoogleSheetsProvider.from_credentials",
         classmethod(lambda cls, config, credentials: google_provider),
     )
 
@@ -1033,7 +1033,7 @@ def test_spreadsheet_mode_selection_google_sheet(
 def test_spreadsheet_mode_selection_xlsx_drive(monkeypatch: pytest.MonkeyPatch) -> None:
     drive_provider = FakeSpreadsheetProvider(rows=[])
     monkeypatch.setattr(
-        "app.birthday_service.XlsxDriveProvider.from_credentials",
+        "app.reminder_service.XlsxDriveProvider.from_credentials",
         classmethod(lambda cls, config, credentials: drive_provider),
     )
 
@@ -1077,11 +1077,11 @@ def test_build_spreadsheet_provider_requests_only_read_scope(
         return credentials
 
     monkeypatch.setattr(
-        "app.birthday_service.service_account.Credentials.from_service_account_file",
+        "app.reminder_service.service_account.Credentials.from_service_account_file",
         fake_from_service_account_file,
     )
     monkeypatch.setattr(
-        "app.birthday_service.GoogleSheetsProvider.from_credentials",
+        "app.reminder_service.GoogleSheetsProvider.from_credentials",
         classmethod(
             lambda cls, config, credentials: (
                 provider_credentials.append(credentials),
@@ -1090,7 +1090,7 @@ def test_build_spreadsheet_provider_requests_only_read_scope(
         ),
     )
     monkeypatch.setattr(
-        "app.birthday_service.XlsxDriveProvider.from_credentials",
+        "app.reminder_service.XlsxDriveProvider.from_credentials",
         classmethod(
             lambda cls, config, credentials: (
                 provider_credentials.append(credentials),
@@ -1129,11 +1129,11 @@ def test_build_email_provider_requests_only_gmail_send_scope(
         return FakeCredentials()
 
     monkeypatch.setattr(
-        "app.birthday_service.service_account.Credentials.from_service_account_file",
+        "app.reminder_service.service_account.Credentials.from_service_account_file",
         fake_from_service_account_file,
     )
     monkeypatch.setattr(
-        "app.birthday_service.GmailProvider.from_credentials",
+        "app.reminder_service.GmailProvider.from_credentials",
         classmethod(
             lambda cls, config, credentials: (
                 provider_credentials.append(credentials),
@@ -1183,7 +1183,7 @@ def test_build_spreadsheet_provider_oauth_mode_reuses_valid_cached_token(
     provider_credentials: list[object] = []
 
     monkeypatch.setattr(
-        "app.birthday_service.GoogleOAuthCredentials.from_authorized_user_file",
+        "app.reminder_service.GoogleOAuthCredentials.from_authorized_user_file",
         lambda filename, scopes: (captured_scopes.append(scopes), cached_credentials)[
             1
         ],
@@ -1197,7 +1197,7 @@ def test_build_spreadsheet_provider_oauth_mode_reuses_valid_cached_token(
         ),
     )
     monkeypatch.setattr(
-        "app.birthday_service.GoogleSheetsProvider.from_credentials",
+        "app.reminder_service.GoogleSheetsProvider.from_credentials",
         classmethod(
             lambda cls, config, credentials: (
                 provider_credentials.append(credentials),
@@ -1236,11 +1236,11 @@ def test_build_email_provider_oauth_mode_does_not_call_with_subject(
     provider_credentials: list[object] = []
 
     monkeypatch.setattr(
-        "app.birthday_service.GoogleOAuthCredentials.from_authorized_user_file",
+        "app.reminder_service.GoogleOAuthCredentials.from_authorized_user_file",
         lambda filename, scopes: cached_credentials,
     )
     monkeypatch.setattr(
-        "app.birthday_service.GmailProvider.from_credentials",
+        "app.reminder_service.GmailProvider.from_credentials",
         classmethod(
             lambda cls, config, credentials: (
                 provider_credentials.append(credentials),
@@ -1274,7 +1274,7 @@ def test_oauth_credentials_refresh_expired_token_without_running_flow(
     )
 
     monkeypatch.setattr(
-        "app.birthday_service.GoogleOAuthCredentials.from_authorized_user_file",
+        "app.reminder_service.GoogleOAuthCredentials.from_authorized_user_file",
         lambda filename, scopes: expired_credentials,
     )
     monkeypatch.setattr(
@@ -1286,7 +1286,7 @@ def test_oauth_credentials_refresh_expired_token_without_running_flow(
         ),
     )
     monkeypatch.setattr(
-        "app.birthday_service.GmailProvider.from_credentials",
+        "app.reminder_service.GmailProvider.from_credentials",
         classmethod(lambda cls, config, credentials: FakeEmailProvider()),
     )
 
@@ -1316,7 +1316,7 @@ def test_oauth_credentials_refresh_expired_token_without_persisting_file(
     provider_credentials: list[object] = []
 
     monkeypatch.setattr(
-        "app.birthday_service.GoogleOAuthCredentials.from_authorized_user_file",
+        "app.reminder_service.GoogleOAuthCredentials.from_authorized_user_file",
         lambda filename, scopes: expired_credentials,
     )
     monkeypatch.setattr(
@@ -1328,7 +1328,7 @@ def test_oauth_credentials_refresh_expired_token_without_persisting_file(
         ),
     )
     monkeypatch.setattr(
-        "app.birthday_service.GmailProvider.from_credentials",
+        "app.reminder_service.GmailProvider.from_credentials",
         classmethod(
             lambda cls, config, credentials: (
                 provider_credentials.append(credentials),
@@ -1363,7 +1363,7 @@ def test_oauth_credentials_valid_cached_token_without_persisting_file(
     provider_credentials: list[object] = []
 
     monkeypatch.setattr(
-        "app.birthday_service.GoogleOAuthCredentials.from_authorized_user_file",
+        "app.reminder_service.GoogleOAuthCredentials.from_authorized_user_file",
         lambda filename, scopes: cached_credentials,
     )
     monkeypatch.setattr(
@@ -1375,7 +1375,7 @@ def test_oauth_credentials_valid_cached_token_without_persisting_file(
         ),
     )
     monkeypatch.setattr(
-        "app.birthday_service.GmailProvider.from_credentials",
+        "app.reminder_service.GmailProvider.from_credentials",
         classmethod(
             lambda cls, config, credentials: (
                 provider_credentials.append(credentials),
@@ -1421,7 +1421,7 @@ def test_oauth_credentials_runs_installed_app_flow_when_no_cached_token(
         ),
     )
     monkeypatch.setattr(
-        "app.birthday_service.GmailProvider.from_credentials",
+        "app.reminder_service.GmailProvider.from_credentials",
         classmethod(lambda cls, config, credentials: FakeEmailProvider()),
     )
 
@@ -1448,19 +1448,19 @@ def test_email_provider_failure_marks_failed_and_continues() -> None:
         ]
     )
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Failure Case",
                     email="failure@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 ),
                 _row(
                     name="Success Case",
                     email="success@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 ),
             ]
         ),
@@ -1475,14 +1475,14 @@ def test_email_provider_failure_marks_failed_and_continues() -> None:
 
 
 def test_duplicate_claim_skips_send() -> None:
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="Duplicate Person",
                     email="dup@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 )
             ]
         ),
@@ -1510,7 +1510,7 @@ def test_duplicate_claim_skips_render_and_local_image_loading(
 
     monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
 
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(
             birthday_image_mode="local",
             birthday_image_path=Path("synthetic-missing-image.gif"),
@@ -1520,7 +1520,7 @@ def test_duplicate_claim_skips_render_and_local_image_loading(
                 _row(
                     name="Duplicate Person",
                     email="dup@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 )
             ]
         ),
@@ -1536,14 +1536,14 @@ def test_duplicate_claim_skips_render_and_local_image_loading(
 
 
 def test_in_progress_claim_skips_send() -> None:
-    summary = run_birthday_job(
+    summary = run_reminder_job(
         _build_config(),
         spreadsheet_provider=FakeSpreadsheetProvider(
             rows=[
                 _row(
                     name="In Progress Person",
                     email="progress@example.com",
-                    birthday="1/1/2000",
+                    reminder_date="1/1/2000",
                 )
             ]
         ),
@@ -1566,14 +1566,14 @@ def test_ambiguous_send_marks_failed_and_logs_critical(
     )
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             _build_config(),
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Ambiguous Person",
                         email="ambiguous@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     )
                 ]
             ),
@@ -1602,19 +1602,19 @@ def test_ambiguous_send_does_not_abort_batch_or_mark_failed(
     )
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             _build_config(),
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Ambiguous Person",
                         email="ambiguous@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     ),
                     _row(
                         name="Success Person",
                         email="success@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     ),
                 ]
             ),
@@ -1626,7 +1626,7 @@ def test_ambiguous_send_does_not_abort_batch_or_mark_failed(
     assert summary == Summary(inspected=2, matched=2, sent=1, ambiguous=1)
     assert store.mark_failed_calls == []
     assert store.mark_sent_calls == [(102, "lease-102")]
-    assert "birthday email sent to success@example.com" in caplog.text
+    assert "standard reminder sent to success@example.com" in caplog.text
 
 
 def test_email_send_failure_mark_failed_lease_loss_does_not_abort_batch(
@@ -1638,19 +1638,19 @@ def test_email_send_failure_mark_failed_lease_loss_does_not_abort_batch(
     )
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             _build_config(),
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Failure Person",
                         email="failure@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     ),
                     _row(
                         name="Success Person",
                         email="success@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     ),
                 ]
             ),
@@ -1663,7 +1663,7 @@ def test_email_send_failure_mark_failed_lease_loss_does_not_abort_batch(
     assert store.mark_failed_calls == [(101, "lease-101")]
     assert store.mark_sent_calls == [(102, "lease-102")]
     assert "failed to mark claim as failed for failure@example.com" in caplog.text
-    assert "birthday email sent to success@example.com" in caplog.text
+    assert "standard reminder sent to success@example.com" in caplog.text
 
 
 def test_mark_sent_lease_loss_after_send_is_ambiguous_and_critical(
@@ -1673,14 +1673,14 @@ def test_mark_sent_lease_loss_after_send_is_ambiguous_and_critical(
     email_provider = FakeEmailProvider()
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             _build_config(),
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Lease Loss Person",
                         email="lease-loss@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     )
                 ]
             ),
@@ -1697,7 +1697,7 @@ def test_mark_sent_lease_loss_after_send_is_ambiguous_and_critical(
     ]
     assert critical_records
     critical_message = critical_records[0].getMessage()
-    assert "birthday email was sent to lease-loss@example.com" in critical_message
+    assert "standard reminder was sent to lease-loss@example.com" in critical_message
     assert "could not durably record it" in critical_message
     assert "duplicate email" in critical_message
 
@@ -1709,14 +1709,14 @@ def test_mark_sent_generic_error_after_send_is_ambiguous_and_critical(
     email_provider = FakeEmailProvider()
 
     with caplog.at_level(logging.INFO):
-        summary = run_birthday_job(
+        summary = run_reminder_job(
             _build_config(),
             spreadsheet_provider=FakeSpreadsheetProvider(
                 rows=[
                     _row(
                         name="Store Failure Person",
                         email="store-failure@example.com",
-                        birthday="1/1/2000",
+                        reminder_date="1/1/2000",
                     )
                 ]
             ),
@@ -1735,7 +1735,7 @@ def test_mark_sent_generic_error_after_send_is_ambiguous_and_critical(
     ]
     assert critical_records
     critical_message = critical_records[0].getMessage()
-    assert "birthday email was sent to store-failure@example.com" in critical_message
+    assert "standard reminder was sent to store-failure@example.com" in critical_message
     assert "could not durably record it" in critical_message
     assert "duplicate email" in critical_message
 
@@ -1757,7 +1757,7 @@ def test_main_exits_zero_when_summary_has_no_failed_or_ambiguous(
 ) -> None:
     monkeypatch.setattr("app.main.load_config", _build_config)
     monkeypatch.setattr(
-        "app.main.run_birthday_job",
+        "app.main.run_reminder_job",
         lambda config, *, clock=None: Summary(
             inspected=7,
             matched=4,
@@ -1785,7 +1785,7 @@ def test_main_exits_one_when_summary_has_failed_sends(
 ) -> None:
     monkeypatch.setattr("app.main.load_config", _build_config)
     monkeypatch.setattr(
-        "app.main.run_birthday_job",
+        "app.main.run_reminder_job",
         lambda config, *, clock=None: Summary(
             inspected=2,
             matched=2,
@@ -1811,7 +1811,7 @@ def test_main_exits_one_when_summary_has_ambiguous_sends(
 ) -> None:
     monkeypatch.setattr("app.main.load_config", _build_config)
     monkeypatch.setattr(
-        "app.main.run_birthday_job",
+        "app.main.run_reminder_job",
         lambda config, *, clock=None: Summary(
             inspected=1,
             matched=1,
@@ -1836,7 +1836,7 @@ def test_main_exits_one_when_summary_has_in_progress_sends(
 ) -> None:
     monkeypatch.setattr("app.main.load_config", _build_config)
     monkeypatch.setattr(
-        "app.main.run_birthday_job",
+        "app.main.run_reminder_job",
         lambda config, *, clock=None: Summary(
             inspected=1,
             matched=1,
@@ -1875,12 +1875,12 @@ def test_main_uses_single_clock_for_logging_and_job_execution(
     monkeypatch.setattr("app.main.load_config", _build_config)
     monkeypatch.setattr("app.main.build_clock", lambda config: clock)
 
-    def fake_run_birthday_job(config: Config, *, clock: object = None) -> Summary:
+    def fake_run_reminder_job(config: Config, *, clock: object = None) -> Summary:
         assert clock is not None
         observed_dates.append(clock.today())  # type: ignore[union-attr]
         return Summary()
 
-    monkeypatch.setattr("app.main.run_birthday_job", fake_run_birthday_job)
+    monkeypatch.setattr("app.main.run_reminder_job", fake_run_reminder_job)
 
     with pytest.raises(SystemExit) as exc_info:
         main()
@@ -2005,7 +2005,7 @@ def _row(
     *,
     name: str,
     email: str,
-    birthday: object,
+    reminder_date: object,
     last_name: object = None,
     gender: object = None,
     service_line: object = None,
@@ -2014,7 +2014,7 @@ def _row(
     row: dict[str, object] = {
         "Name": name,
         "Email": email,
-        "Birthday": birthday,
+        "Birthday": reminder_date,
     }
     if last_name is not None:
         row["Last Name"] = last_name

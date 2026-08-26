@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from httplib2 import HttpLib2Error  # type: ignore[import-untyped]
 
-from app.birthday_rules import parse_birthday
+from app.reminder_rules import parse_reminder_date
 from app.config import Config
 from app.email_content import (
     BPReminderRecipients,
@@ -120,7 +120,7 @@ def test_google_sheets_load_rows_preserves_numeric_birthday_serial() -> None:
     assert rows[0]["Email"] == "test.person@example.com"
     assert isinstance(rows[0]["Birthday"], int | float)
     assert rows[0]["Birthday"] == 36526
-    assert parse_birthday(rows[0]["Birthday"]) == date(2000, 1, 1)
+    assert parse_reminder_date(rows[0]["Birthday"]) == date(2000, 1, 1)
 
 
 def test_google_sheets_load_rows_stops_at_first_row_without_name_or_last_name() -> None:

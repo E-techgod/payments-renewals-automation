@@ -10,7 +10,7 @@ from app.email_content import (
     MALE_SALUTATION,
 )
 
-DeliveryRoute = Literal["birthday_email", "bp_call_reminder"]
+DeliveryRoute = Literal["standard_reminder", "bp_call_reminder"]
 
 
 def build_display_name(first_name: str, last_name: str | None) -> str:
@@ -49,14 +49,14 @@ def resolve_salutation(gender: str | None) -> str:
 class Client:
     name: str
     email: str
-    birthday: date
+    reminder_date: date
     row_index: int
     last_sent_year: int | None = None
     last_name: str | None = None
     gender: str | None = None
     mobile_phone: str | None = None
     service_lines: tuple[str, ...] = ()
-    delivery_route: DeliveryRoute = "birthday_email"
+    delivery_route: DeliveryRoute = "standard_reminder"
 
     @property
     def display_name(self) -> str:
@@ -68,7 +68,7 @@ class Client:
 
 
 @dataclass(frozen=True)
-class BirthdayMatch:
+class ReminderMatch:
     client: Client
     celebrated_year: int
 

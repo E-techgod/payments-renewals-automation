@@ -1,8 +1,8 @@
-# Birthday Email Automation
+# Reminder Automation
 
 ## Project Purpose
 
-This project is a single-run daily job that reads client birthdays from a spreadsheet, finds the clients whose birthday is today, routes each match to either the standard birthday email path or a BP call-reminder path, and uses a durable state store to prevent duplicate sends for the same client/date/year.
+This project is a single-run daily job that reads client reminder data from a spreadsheet, finds the clients due today, routes each match to either the standard reminder path or a BP call-reminder path, and uses a durable state store to prevent duplicate sends for the same client/date/year.
 
 ## Architecture Overview
 
@@ -12,10 +12,10 @@ High-level pipeline:
 2. Resolve "today" in `APP_TIMEZONE` or use `TEST_DATE`.
 3. Read spreadsheet rows from either Google Sheets or a Drive-hosted `.xlsx` file.
 4. Parse each row into a client record and skip invalid rows with warnings.
-5. Match birthdays for today, including the Feb. 29-on-Feb. 28 rule in non-leap years.
+5. Match reminders due today. The current baseline still uses birthday-date matching, including the Feb. 29-on-Feb. 28 rule in non-leap years.
 6. Atomically claim each delivery in the configured state backend before attempting it.
 7. If `Línea de servicio` contains `BP`, send an internal reminder to call the client instead of emailing the client directly.
-8. Otherwise render the personalized birthday email, send it through Gmail, and record the final result.
+8. Otherwise render the personalized reminder email, send it through Gmail, and record the final result.
 
 `PLAN.md` section 1 is the authoritative detailed design if you want the full implementation flow.
 

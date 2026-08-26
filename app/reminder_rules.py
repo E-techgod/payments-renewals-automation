@@ -28,7 +28,7 @@ _ENGLISH_MONTHS = {
 }
 
 
-def parse_birthday(raw: object) -> date | None:
+def parse_reminder_date(raw: object) -> date | None:
     if raw is None:
         return None
     if isinstance(raw, datetime):
@@ -38,13 +38,13 @@ def parse_birthday(raw: object) -> date | None:
     if isinstance(raw, int | float) and not isinstance(raw, bool):
         return _parse_excel_serial(raw)
     if isinstance(raw, str):
-        return _parse_birthday_string(raw)
+        return _parse_reminder_date_string(raw)
     return None
 
 
-def is_birthday_today(birthday: date, today: date) -> bool:
-    celebration_date = _celebration_date_for_year(birthday, today.year)
-    return (celebration_date.month, celebration_date.day) == (today.month, today.day)
+def is_reminder_due_today(reminder_date: date, today: date) -> bool:
+    scheduled_date = _scheduled_date_for_year(reminder_date, today.year)
+    return (scheduled_date.month, scheduled_date.day) == (today.month, today.day)
 
 
 class Clock(Protocol):
@@ -83,7 +83,7 @@ def _parse_excel_serial(raw: float) -> date | None:
         return None
 
 
-def _parse_birthday_string(raw: str) -> date | None:
+def _parse_reminder_date_string(raw: str) -> date | None:
     value = raw.strip()
     if not value:
         return None
@@ -134,12 +134,12 @@ def _parse_long_month_string(value: str) -> date:
     return date(year, month, day)
 
 
-def _celebration_date_for_year(birthday: date, year: int) -> date:
-    if birthday.month == 2 and birthday.day == 29:
+def _scheduled_date_for_year(reminder_date: date, year: int) -> date:
+    if reminder_date.month == 2 and reminder_date.day == 29:
         if _is_leap_year(year):
             return date(year, 2, 29)
         return date(year, 2, 28)
-    return date(year, birthday.month, birthday.day)
+    return date(year, reminder_date.month, reminder_date.day)
 
 
 def _is_leap_year(year: int) -> bool:

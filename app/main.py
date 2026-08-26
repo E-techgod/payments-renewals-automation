@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from app.birthday_rules import build_clock
-from app.birthday_service import run_birthday_job
+from app.reminder_rules import build_clock
+from app.reminder_service import run_reminder_job
 from app.config import ConfigError, load_config
 
 
@@ -39,7 +39,7 @@ def main() -> None:
     )
 
     try:
-        summary = run_birthday_job(config, clock=effective_clock)
+        summary = run_reminder_job(config, clock=effective_clock)
     except Exception as exc:
         logger.critical("job failed", exc_info=True)
         raise SystemExit(1) from exc

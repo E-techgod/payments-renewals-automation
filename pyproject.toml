@@ -1,7 +1,7 @@
 [project]
 name = "happybd-automatization"
 version = "0.1.0"
-description = "Daily batch job for sending birthday emails from spreadsheet data"
+description = "Daily batch job for sending reminder emails from spreadsheet data"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

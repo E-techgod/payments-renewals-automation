@@ -71,7 +71,7 @@ def test_client_salutation_property_reflects_gender() -> None:
     client = Client(
         name="Test",
         email="test@example.com",
-        birthday=date(2000, 1, 1),
+        reminder_date=date(2000, 1, 1),
         row_index=2,
         gender="Femenino",
     )
@@ -83,7 +83,7 @@ def test_client_salutation_property_defaults_when_gender_missing() -> None:
     client = Client(
         name="Test",
         email="test@example.com",
-        birthday=date(2000, 1, 1),
+        reminder_date=date(2000, 1, 1),
         row_index=2,
     )
 

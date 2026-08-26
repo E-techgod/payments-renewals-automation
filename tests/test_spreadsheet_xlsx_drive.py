@@ -9,7 +9,7 @@ import pytest
 from httplib2 import HttpLib2Error  # type: ignore[import-untyped]
 from openpyxl import Workbook
 
-from app.birthday_rules import parse_birthday
+from app.reminder_rules import parse_reminder_date
 from app.config import Config
 from app.email_content import (
     BPReminderRecipients,
@@ -112,14 +112,14 @@ def test_xlsx_drive_load_rows_allows_blank_header_spacer_columns() -> None:
     ]
 
 
-def test_xlsx_drive_load_rows_preserves_native_birthday_datetime() -> None:
-    birthday_value = date(2000, 1, 2)
+def test_xlsx_drive_load_rows_preserves_native_reminder_datetime() -> None:
+    reminder_date_value = date(2000, 1, 2)
     provider = XlsxDriveProvider(
         config=_build_config(),
         service_factory=lambda: _FakeDriveService(
             _build_workbook_bytes(
                 ["Name", "Email", "Birthday"],
-                ["  Test Person  ", " test.person@example.com ", birthday_value],
+                ["  Test Person  ", " test.person@example.com ", reminder_date_value],
             )
         ),
     )
@@ -129,12 +129,12 @@ def test_xlsx_drive_load_rows_preserves_native_birthday_datetime() -> None:
     assert rows[0]["Name"] == "Test Person"
     assert rows[0]["Email"] == "test.person@example.com"
     assert isinstance(rows[0]["Birthday"], date | datetime)
-    loaded_birthday = rows[0]["Birthday"]
-    if isinstance(loaded_birthday, datetime):
-        assert loaded_birthday.date() == birthday_value
+    loaded_reminder_date = rows[0]["Birthday"]
+    if isinstance(loaded_reminder_date, datetime):
+        assert loaded_reminder_date.date() == reminder_date_value
     else:
-        assert loaded_birthday == birthday_value
-    assert parse_birthday(rows[0]["Birthday"]) == date(2000, 1, 2)
+        assert loaded_reminder_date == reminder_date_value
+    assert parse_reminder_date(rows[0]["Birthday"]) == date(2000, 1, 2)
 
 
 def test_xlsx_drive_load_rows_stops_at_first_row_without_name_or_last_name() -> None:
