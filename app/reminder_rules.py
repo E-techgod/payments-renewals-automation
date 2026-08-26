@@ -8,6 +8,8 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from app.config import Config
+from app.models import PolicyRenewal, ReminderMatch
+from app.reminder_config import ReminderStage
 
 _EXCEL_EPOCH = date(1899, 12, 30)
 _MONTH_DAY_YEAR_PATTERN = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
@@ -42,9 +44,27 @@ def parse_reminder_date(raw: object) -> date | None:
     return None
 
 
-def is_reminder_due_today(reminder_date: date, today: date) -> bool:
-    scheduled_date = _scheduled_date_for_year(reminder_date, today.year)
-    return (scheduled_date.month, scheduled_date.day) == (today.month, today.day)
+def build_due_reminders(
+    renewal: PolicyRenewal,
+    stages: tuple[ReminderStage, ...],
+    today: date,
+) -> list[ReminderMatch]:
+    matches: list[ReminderMatch] = []
+    for stage in stages:
+        if not stage.enabled:
+            continue
+        reminder_due_date = renewal.renewal_date + timedelta(days=stage.offset_days)
+        if reminder_due_date != today:
+            continue
+        matches.append(
+            ReminderMatch(
+                renewal=renewal,
+                stage=stage,
+                reminder_due_date=reminder_due_date,
+                days_remaining=(renewal.renewal_date - today).days,
+            )
+        )
+    return matches
 
 
 class Clock(Protocol):
@@ -132,15 +152,3 @@ def _parse_long_month_string(value: str) -> date:
     day = int(day_text)
     year = int(year_text)
     return date(year, month, day)
-
-
-def _scheduled_date_for_year(reminder_date: date, year: int) -> date:
-    if reminder_date.month == 2 and reminder_date.day == 29:
-        if _is_leap_year(year):
-            return date(year, 2, 29)
-        return date(year, 2, 28)
-    return date(year, reminder_date.month, reminder_date.day)
-
-
-def _is_leap_year(year: int) -> bool:
-    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)

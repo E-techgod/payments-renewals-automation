@@ -20,26 +20,33 @@ _SQLITE_TIMEOUT_SECONDS = 30
 _INIT_RETRY_DELAY_SECONDS = 0.1
 _LOCK_RETRY_DELAY_SECONDS = 0.2
 _CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS birthday_sends (
+CREATE TABLE IF NOT EXISTS renewal_reminder_sends (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email_normalized TEXT NOT NULL,
-    birthday_month INTEGER NOT NULL,
-    birthday_day INTEGER NOT NULL,
-    send_year INTEGER NOT NULL,
+    client_key TEXT NOT NULL,
+    policy_key TEXT NOT NULL,
+    renewal_date TEXT NOT NULL,
+    reminder_stage TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending','sent','failed')),
     claimed_at TEXT NOT NULL,
     lease_token TEXT NOT NULL,
     sent_at TEXT,
     created_at TEXT NOT NULL,
-    UNIQUE (email_normalized, birthday_month, birthday_day, send_year)
+    UNIQUE (client_key, policy_key, renewal_date, reminder_stage)
 );
 """
 
 
 class StateStore:
-    def __init__(self, db_path: Path, stale_claim_timeout_minutes: int) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        stale_claim_timeout_minutes: int,
+        *,
+        table_name: str = "renewal_reminder_sends",
+    ) -> None:
         self._db_path = db_path
         self._stale_claim_timeout = timedelta(minutes=stale_claim_timeout_minutes)
+        self._table_name = table_name
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(
             self._db_path,
@@ -52,17 +59,27 @@ class StateStore:
         )
         self._initialize_connection()
 
-    def claim(self, email: str, month: int, day: int, year: int) -> ClaimResult:
-        email_normalized = normalize_email(email)
+    def claim(
+        self,
+        client_key: str,
+        policy_key: str,
+        renewal_date_iso: str,
+        stage_name: str,
+    ) -> ClaimResult:
         return self._run_with_locked_retry(
-            lambda: self._claim_once(email_normalized, month, day, year)
+            lambda: self._claim_once(
+                normalize_email(client_key),
+                policy_key.strip(),
+                renewal_date_iso,
+                stage_name,
+            )
         )
 
     def mark_sent(self, claim_id: int, lease_token: str) -> None:
         sent_at = utc_now_isoformat()
         self._run_pending_transition(
-            """
-            UPDATE birthday_sends
+            f"""
+            UPDATE {self._table_name}
             SET status='sent', sent_at=?
             WHERE id=? AND status='pending' AND lease_token=?
             """,
@@ -73,8 +90,8 @@ class StateStore:
 
     def mark_failed(self, claim_id: int, lease_token: str) -> None:
         self._run_pending_transition(
-            """
-            UPDATE birthday_sends
+            f"""
+            UPDATE {self._table_name}
             SET status='failed'
             WHERE id=? AND status='pending' AND lease_token=?
             """,
@@ -88,10 +105,10 @@ class StateStore:
 
     def _claim_once(
         self,
-        email_normalized: str,
-        month: int,
-        day: int,
-        year: int,
+        client_key: str,
+        policy_key: str,
+        renewal_date_iso: str,
+        stage_name: str,
     ) -> ClaimResult:
         now = datetime.now(UTC)
         now_iso = _isoformat(now)
@@ -100,26 +117,34 @@ class StateStore:
         try:
             try:
                 cursor = self._connection.execute(
-                    """
-                    INSERT INTO birthday_sends (
-                        email_normalized,
-                        birthday_month,
-                        birthday_day,
-                        send_year,
+                    f"""
+                    INSERT INTO {self._table_name} (
+                        client_key,
+                        policy_key,
+                        renewal_date,
+                        reminder_stage,
                         status,
                         claimed_at,
                         lease_token,
                         created_at
                     ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
                     """,
-                    (email_normalized, month, day, year, now_iso, lease_token, now_iso),
+                    (
+                        client_key,
+                        policy_key,
+                        renewal_date_iso,
+                        stage_name,
+                        now_iso,
+                        lease_token,
+                        now_iso,
+                    ),
                 )
             except sqlite3.IntegrityError:
                 result = self._handle_duplicate_claim(
-                    email_normalized=email_normalized,
-                    month=month,
-                    day=day,
-                    year=year,
+                    client_key=client_key,
+                    policy_key=policy_key,
+                    renewal_date_iso=renewal_date_iso,
+                    stage_name=stage_name,
                     now=now,
                     now_iso=now_iso,
                 )
@@ -138,20 +163,20 @@ class StateStore:
     def _handle_duplicate_claim(
         self,
         *,
-        email_normalized: str,
-        month: int,
-        day: int,
-        year: int,
+        client_key: str,
+        policy_key: str,
+        renewal_date_iso: str,
+        stage_name: str,
         now: datetime,
         now_iso: str,
     ) -> ClaimResult:
         row = self._connection.execute(
-            """
+            f"""
             SELECT id, status, claimed_at
-            FROM birthday_sends
-            WHERE email_normalized=? AND birthday_month=? AND birthday_day=? AND send_year=?
+            FROM {self._table_name}
+            WHERE client_key=? AND policy_key=? AND renewal_date=? AND reminder_stage=?
             """,
-            (email_normalized, month, day, year),
+            (client_key, policy_key, renewal_date_iso, stage_name),
         ).fetchone()
         if row is None:
             return ClaimResult(ClaimOutcome.IN_PROGRESS)
@@ -172,8 +197,8 @@ class StateStore:
         if status in {"failed", "pending"}:
             lease_token = new_lease_token()
             cursor = self._connection.execute(
-                """
-                UPDATE birthday_sends
+                f"""
+                UPDATE {self._table_name}
                 SET status='pending', claimed_at=?, lease_token=?
                 WHERE id=? AND status=?
                 """,
@@ -227,7 +252,11 @@ class StateStore:
                 ).fetchone()
                 if journal_mode is None or str(journal_mode[0]).lower() != "wal":
                     self._connection.execute("PRAGMA journal_mode=WAL")
-                self._connection.execute(_CREATE_TABLE_SQL)
+                self._connection.execute(
+                    _CREATE_TABLE_SQL.replace(
+                        "renewal_reminder_sends", self._table_name
+                    )
+                )
                 return
             except sqlite3.OperationalError as exc:
                 if "database is locked" not in str(exc).lower():

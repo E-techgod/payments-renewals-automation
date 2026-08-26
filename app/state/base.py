@@ -27,7 +27,13 @@ class ClaimResult:
 
 
 class StateStore(Protocol):
-    def claim(self, email: str, month: int, day: int, year: int) -> ClaimResult: ...
+    def claim(
+        self,
+        client_key: str,
+        policy_key: str,
+        renewal_date_iso: str,
+        stage_name: str,
+    ) -> ClaimResult: ...
 
     def mark_sent(self, claim_id: int, lease_token: str) -> None: ...
 
@@ -52,14 +58,27 @@ def new_lease_token() -> str:
     return uuid.uuid4().hex
 
 
-def deterministic_claim_id(email_normalized: str, month: int, day: int, year: int) -> int:
-    raw = f"{email_normalized}\0{month}\0{day}\0{year}".encode("utf-8")
+def deterministic_claim_id(
+    client_key: str,
+    policy_key: str,
+    renewal_date_iso: str,
+    stage_name: str,
+) -> int:
+    raw = (
+        f"{client_key}\0{policy_key}\0{renewal_date_iso}\0{stage_name}".encode("utf-8")
+    )
     digest = hashlib.sha256(raw).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=False) & ((1 << 63) - 1)
 
 
 def deterministic_document_id(
-    email_normalized: str, month: int, day: int, year: int
+    client_key: str,
+    policy_key: str,
+    renewal_date_iso: str,
+    stage_name: str,
 ) -> str:
-    encoded_email = quote(email_normalized, safe="")
-    return f"{encoded_email}|{month}|{day}|{year}"
+    encoded_client = quote(client_key, safe="")
+    encoded_policy = quote(policy_key, safe="")
+    encoded_renewal = quote(renewal_date_iso, safe="")
+    encoded_stage = quote(stage_name, safe="")
+    return f"{encoded_client}|{encoded_policy}|{encoded_renewal}|{encoded_stage}"

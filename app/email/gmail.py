@@ -76,7 +76,7 @@ class GmailProvider(EmailProvider):
             image_part = MIMEImage(
                 message.inline_image.data,
                 _subtype=image_subtype,
-                name="birthday_banner.jpg",
+                name="inline_asset.jpg",
             )
 
             image_part.add_header(
@@ -87,7 +87,7 @@ class GmailProvider(EmailProvider):
             image_part.add_header(
                 "Content-Disposition",
                 "inline",
-                filename="birthday_banner.jpg",
+                filename="inline_asset.jpg",
             )
 
             mime_message.attach(image_part)

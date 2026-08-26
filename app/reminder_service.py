@@ -4,8 +4,6 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
-from pathlib import Path
 from typing import Any
 
 from google.auth.transport.requests import (  # type: ignore[import-untyped]
@@ -17,31 +15,13 @@ from google.oauth2.credentials import (  # type: ignore[import-untyped]
 )
 from jinja2 import Environment
 
-from app.reminder_rules import (
-    Clock,
-    build_clock,
-    is_reminder_due_today,
-    parse_reminder_date,
-)
 from app.config import Config
-from app.email.base import (
-    AmbiguousSendError,
-    EmailMessage,
-    EmailProvider,
-    EmailSendError,
-    InlineImage,
-)
-from app.email_content import (
-    BP_FOLLOW_UP_TEXT,
-    BP_REMINDER_SUBJECT_TEMPLATE,
-    BP_STATUS_LABEL,
-    INLINE_IMAGE_CONTENT_ID,
-    SIGNATURE_CLOSING,
-    SIGNATURE_INTRO,
-    build_email_template_environment,
-)
+from app.email.base import AmbiguousSendError, EmailMessage, EmailProvider, EmailSendError
 from app.email.gmail import GmailProvider
-from app.models import Client, DeliveryRoute
+from app.email_content import build_email_template_environment
+from app.models import Client, PolicyRenewal, ReminderMatch
+from app.reminder_config import build_template_context, is_policy_eligible
+from app.reminder_rules import Clock, build_clock, build_due_reminders, parse_reminder_date
 from app.spreadsheet.base import SpreadsheetProvider
 from app.spreadsheet.google_sheets import GoogleSheetsProvider
 from app.spreadsheet.xlsx_drive import XlsxDriveProvider
@@ -49,18 +29,12 @@ from app.state.base import ClaimOutcome, ClaimResult, StateStore
 from app.state.firestore import FirestoreStateStore
 from app.state.sqlite import StateStore as SqliteStateStore
 
-StateStore = SqliteStateStore
-
 LOGGER = logging.getLogger(__name__)
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 _SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
-# OAuth mode requests the union of scopes up front (one interactive consent,
-# one cached token) rather than the narrower per-call scope used for service
-# accounts, since an installed-app flow can't silently re-consent mid-run.
 _OAUTH_SCOPES = [_GMAIL_SCOPE, _SHEETS_SCOPE, _DRIVE_SCOPE]
-_UNSET = object()
 _SERVICE_LINE_SPLIT_RE = re.compile(r"[,;/]+")
 _NON_DIGIT_RE = re.compile(r"\D+")
 _MIN_USABLE_PHONE_DIGITS = 7
@@ -88,11 +62,8 @@ def run_reminder_job(
 ) -> Summary:
     provider = spreadsheet_provider or build_spreadsheet_provider(config)
     effective_clock = clock or build_clock(config)
-    get_state_store, close_state_store = _build_state_store_accessor(
-        config, state_store
-    )
+    get_state_store, close_state_store = _build_state_store_accessor(config, state_store)
     get_mailer = _build_email_provider_accessor(config, email_provider)
-    get_inline_image = _build_inline_image_accessor(config)
 
     summary = Summary()
     try:
@@ -100,40 +71,46 @@ def run_reminder_job(
         rows = provider.load_rows()
         LOGGER.info("spreadsheet load succeeded: rows=%d", len(rows))
 
-        clients: list[Client] = []
+        renewals: list[PolicyRenewal] = []
         invalid_count = 0
         for row_index, row in enumerate(rows, start=2):
-            client = _parse_client_row(config, row, row_index)
-            if client is None:
+            renewal = _parse_renewal_row(config, row, row_index)
+            if renewal is None:
                 invalid_count += 1
                 continue
-            clients.append(client)
+            if not is_policy_eligible(
+                client_name=renewal.client.display_name,
+                policy_number=renewal.policy_number,
+                renewal_date=renewal.renewal_date,
+                service_lines=renewal.client.service_lines,
+            ):
+                continue
+            renewals.append(renewal)
 
-        matched_clients = [
-            client
-            for client in clients
-            if is_reminder_due_today(client.reminder_date, today)
+        matches = [
+            match
+            for renewal in renewals
+            for match in build_due_reminders(renewal, config.reminder_stages, today)
         ]
-        LOGGER.info("reminders detected: count=%d", len(matched_clients))
+        LOGGER.info("reminders detected: count=%d", len(matches))
 
         summary = Summary(
             inspected=len(rows),
-            matched=len(matched_clients),
+            matched=len(matches),
             invalid=invalid_count,
         )
 
-        html_env, subject_env = _build_template_environments()
+        template_env, subject_env = _build_template_environments()
 
-        for client in matched_clients:
+        for match in matches:
             summary = _process_match(
                 config=config,
-                client=client,
-                today_year=today.year,
+                match=match,
+                today=today,
                 get_state_store=get_state_store,
                 get_email_provider=get_mailer,
-                html_env=html_env,
+                template_env=template_env,
                 subject_env=subject_env,
-                get_inline_image=get_inline_image,
                 summary=summary,
             )
         return summary
@@ -162,8 +139,6 @@ def build_email_provider(
 
 def _build_gmail_credentials(config: Config) -> Any:
     credentials = _load_google_credentials(config, [_GMAIL_SCOPE])
-    # Domain-wide delegation (with_subject) is a service-account-only feature;
-    # an OAuth user credential already represents the consenting user.
     if config.google_auth_mode == "service_account":
         return credentials.with_subject(config.google_impersonate_subject)
     return credentials
@@ -242,15 +217,17 @@ def _build_state_store_accessor(
                 store = FirestoreStateStore(
                     config.stale_claim_timeout_minutes,
                     firestore_database=config.firestore_database,
+                    collection_name=config.firestore_collection_name,
                 )
             else:
                 if config.state_db_path is None:
                     raise RuntimeError(
                         "STATE_DB_PATH is required when STATE_BACKEND=sqlite"
                     )
-                store = StateStore(
+                store = SqliteStateStore(
                     config.state_db_path,
                     config.stale_claim_timeout_minutes,
+                    table_name=config.state_table_name,
                 )
         return store
 
@@ -261,26 +238,12 @@ def _build_state_store_accessor(
     return get_state_store, close_state_store
 
 
-def _build_inline_image_accessor(config: Config) -> Callable[[], InlineImage | None]:
-    inline_image: InlineImage | None | object = _UNSET
-
-    def get_inline_image() -> InlineImage | None:
-        nonlocal inline_image
-        if inline_image is _UNSET:
-            inline_image = _build_inline_image(config)
-        if isinstance(inline_image, InlineImage):
-            return inline_image
-        return None
-
-    return get_inline_image
-
-
-def _parse_client_row(
+def _parse_renewal_row(
     config: Config, row: dict[str, object], row_index: int
-) -> Client | None:
-    name = _parse_name(row.get(config.name_column))
+) -> PolicyRenewal | None:
+    name = _parse_name(row.get(config.client_name_column))
     if name is None:
-        LOGGER.warning("row %d skipped: missing name", row_index)
+        LOGGER.warning("row %d skipped: missing client name", row_index)
         return None
 
     normalized_email = _parse_email(row.get(config.email_column))
@@ -288,24 +251,28 @@ def _parse_client_row(
         LOGGER.warning("row %d skipped: missing or invalid email", row_index)
         return None
 
-    reminder_date = parse_reminder_date(row.get(config.birthday_column))
-    if reminder_date is None:
-        LOGGER.warning("row %d skipped: missing or invalid reminder date", row_index)
+    policy_number = _parse_policy_number(row.get(config.policy_number_column))
+    if policy_number is None:
+        LOGGER.warning("row %d skipped: missing policy number", row_index)
         return None
 
-    return Client(
+    renewal_date = parse_reminder_date(row.get(config.renewal_date_column))
+    if renewal_date is None:
+        LOGGER.warning("row %d skipped: missing or invalid renewal date", row_index)
+        return None
+
+    client = Client(
         name=name,
         email=normalized_email,
-        reminder_date=reminder_date,
-        row_index=row_index,
-        last_sent_year=_parse_last_sent_year(row.get(config.last_sent_year_column)),
         last_name=_parse_name(row.get(config.last_name_column)),
-        gender=_parse_gender(row.get(config.gender_column)),
         mobile_phone=_parse_mobile_phone(row.get(config.mobile_phone_column)),
         service_lines=_parse_service_lines(row.get(config.service_line_column)),
-        delivery_route=_resolve_delivery_route(
-            row.get(config.service_line_column),
-        ),
+    )
+    return PolicyRenewal(
+        client=client,
+        policy_number=policy_number,
+        renewal_date=renewal_date,
+        row_index=row_index,
     )
 
 
@@ -318,13 +285,13 @@ def _parse_name(raw: object) -> str | None:
     return name
 
 
-def _parse_gender(raw: object) -> str | None:
-    if not isinstance(raw, str):
-        return None
-    gender = raw.strip()
-    if not gender:
-        return None
-    return gender
+def _parse_policy_number(raw: object) -> str | None:
+    if isinstance(raw, str):
+        value = raw.strip()
+        return value or None
+    if isinstance(raw, int | float) and not isinstance(raw, bool):
+        return str(raw).rstrip("0").rstrip(".") if isinstance(raw, float) else str(raw)
+    return None
 
 
 def _parse_email(raw: object) -> str | None:
@@ -363,89 +330,50 @@ def _parse_service_lines(raw: object) -> tuple[str, ...]:
     return tuple(values)
 
 
-def _contains_bp_service_line(raw: object) -> bool:
-    return any(value.casefold() == "bp" for value in _parse_service_lines(raw))
-
-
-def _resolve_delivery_route(raw_service_line: object) -> DeliveryRoute:
-    if _contains_bp_service_line(raw_service_line):
-        return "bp_call_reminder"
-    return "standard_reminder"
-
-
-def _parse_last_sent_year(raw: object) -> int | None:
-    if raw is None:
-        return None
-    if isinstance(raw, int) and not isinstance(raw, bool):
-        return raw
-    if isinstance(raw, float) and raw.is_integer():
-        return int(raw)
-    if isinstance(raw, str):
-        text = raw.strip()
-        if not text:
-            return None
-        try:
-            return int(text)
-        except ValueError:
-            return None
-    return None
-
-
 def _build_template_environments() -> tuple[Environment, Environment]:
-    html_env = build_email_template_environment()
-    subject_env = Environment(autoescape=False)
-    return html_env, subject_env
-
-
-def _build_inline_image(config: Config) -> InlineImage | None:
-    if config.birthday_image_mode != "local":
-        return None
-    return InlineImage(
-        content_id=INLINE_IMAGE_CONTENT_ID,
-        data=config.birthday_image_path.read_bytes(),
-        mime_type=_sniff_image_mime_type(config.birthday_image_path),
-    )
-
-
-def _sniff_image_mime_type(path: Path) -> str:
-    suffix = path.suffix.casefold()
-    if suffix in {".jpg", ".jpeg"}:
-        return "image/jpeg"
-    if suffix == ".png":
-        return "image/png"
-    raise ValueError(f"Unsupported reminder image file extension: {path.suffix}")
+    return build_email_template_environment(), Environment(autoescape=False)
 
 
 def _process_match(
     *,
     config: Config,
-    client: Client,
-    today_year: int,
+    match: ReminderMatch,
+    today,
     get_state_store: Callable[[], StateStore],
     get_email_provider: Callable[[], EmailProvider],
-    html_env: Environment,
+    template_env: Environment,
     subject_env: Environment,
-    get_inline_image: Callable[[], InlineImage | None],
     summary: Summary,
 ) -> Summary:
     if config.dry_run:
-        _log_dry_run(config, client)
+        _log_dry_run(match)
         return summary
 
     claim_result: ClaimResult | None = None
+    renewal = match.renewal
     state_store = get_state_store()
     try:
         claim_result = state_store.claim(
-            client.email,
-            client.reminder_date.month,
-            client.reminder_date.day,
-            today_year,
+            renewal.client.email,
+            renewal.policy_number,
+            renewal.renewal_date.isoformat(),
+            match.stage.name,
         )
         if claim_result.outcome == ClaimOutcome.ALREADY_SENT:
-            LOGGER.info("duplicate skipped for %s", client.email)
+            LOGGER.info(
+                "duplicate skipped for %s policy=%s stage=%s",
+                renewal.client.email,
+                renewal.policy_number,
+                match.stage.name,
+            )
             return _with_increment(summary, duplicates=1)
         if claim_result.outcome == ClaimOutcome.IN_PROGRESS:
-            LOGGER.info("in-progress skipped for %s", client.email)
+            LOGGER.info(
+                "in-progress skipped for %s policy=%s stage=%s",
+                renewal.client.email,
+                renewal.policy_number,
+                match.stage.name,
+            )
             return _with_increment(summary, in_progress=1)
 
         if claim_result.claim_id is None or claim_result.lease_token is None:
@@ -455,10 +383,10 @@ def _process_match(
 
         message = _render_message(
             config=config,
-            client=client,
-            html_env=html_env,
+            match=match,
+            today=today,
+            template_env=template_env,
             subject_env=subject_env,
-            get_inline_image=get_inline_image,
         )
 
         get_email_provider().send(message)
@@ -466,17 +394,26 @@ def _process_match(
             state_store.mark_sent(claim_result.claim_id, claim_result.lease_token)
         except Exception:
             LOGGER.critical(
-                "standard reminder was sent to %s, but the state store could not durably record it; a future reclaim could send a duplicate email, so verify the mailbox manually",
-                client.email,
+                "renewal reminder was sent to %s for policy %s stage %s, but the state store could not durably record it; a future reclaim could send a duplicate email, so verify the mailbox manually",
+                renewal.client.email,
+                renewal.policy_number,
+                match.stage.name,
                 exc_info=True,
             )
             return _with_increment(summary, ambiguous=1)
-        _log_sent_message(client, message)
+        LOGGER.info(
+            "renewal reminder sent to %s for policy %s stage %s",
+            renewal.client.email,
+            renewal.policy_number,
+            match.stage.name,
+        )
         return _with_increment(summary, sent=1)
     except AmbiguousSendError:
         LOGGER.critical(
-            "send outcome is unknown for %s; a future reclaim could send a duplicate email, so verify the mailbox manually",
-            client.email,
+            "send outcome is unknown for %s policy %s stage %s; a future reclaim could send a duplicate email, so verify the mailbox manually",
+            renewal.client.email,
+            renewal.policy_number,
+            match.stage.name,
             exc_info=True,
         )
         return _with_increment(summary, ambiguous=1)
@@ -489,9 +426,9 @@ def _process_match(
             except Exception:
                 LOGGER.exception(
                     "failed to mark claim as failed for %s after an email send failure",
-                    client.email,
+                    renewal.client.email,
                 )
-        LOGGER.exception("standard reminder failed for %s", client.email)
+        LOGGER.exception("renewal reminder failed for %s", renewal.client.email)
         return _with_increment(summary, failed=1)
     except Exception:
         if (
@@ -504,146 +441,58 @@ def _process_match(
             except Exception:
                 LOGGER.exception(
                     "failed to mark claim as failed for %s after an unexpected error",
-                    client.email,
+                    renewal.client.email,
                 )
-        LOGGER.exception("unexpected error while processing %s", client.email)
+        LOGGER.exception("unexpected error while processing %s", renewal.client.email)
         return _with_increment(summary, failed=1)
 
 
 def _render_message(
     *,
     config: Config,
-    client: Client,
-    html_env: Environment,
+    match: ReminderMatch,
+    today,
+    template_env: Environment,
     subject_env: Environment,
-    get_inline_image: Callable[[], InlineImage | None],
 ) -> EmailMessage:
-    if client.delivery_route == "bp_call_reminder":
-        return _render_bp_call_reminder(
-            config=config,
-            client=client,
-            html_env=html_env,
-            subject_env=subject_env,
-        )
-
-    return _render_standard_reminder(
-        config=config,
-        client=client,
-        html_env=html_env,
-        subject_env=subject_env,
-        get_inline_image=get_inline_image,
+    renewal = match.renewal
+    template_context = build_template_context(
+        client_name=renewal.client.display_name,
+        policy_number=renewal.policy_number,
+        renewal_date=renewal.renewal_date,
+        reminder_stage=match.stage,
+        today=today,
     )
-
-
-def _render_standard_reminder(
-    *,
-    config: Config,
-    client: Client,
-    html_env: Environment,
-    subject_env: Environment,
-    get_inline_image: Callable[[], InlineImage | None],
-) -> EmailMessage:
-    template_context = {
-        "name": client.name,
-        "salutation": client.salutation,
-        "image_mode": config.birthday_image_mode,
-        "image_alt": config.birthday_image_alt,
-        "image_width": config.birthday_image_width,
-        "image_url": config.birthday_image_url,
-        "inline_image_content_id": INLINE_IMAGE_CONTENT_ID,
-        "signature_closing": SIGNATURE_CLOSING,
-        "signature_intro": SIGNATURE_INTRO,
-        "from_name": config.email_from_name,
-    }
-    html_body = html_env.get_template("birthday_email.html").render(template_context)
-    text_body = html_env.get_template("birthday_email.txt").render(template_context)
+    template_context["from_name"] = config.email_from_name
+    html_body = template_env.get_template(config.email_html_template).render(
+        template_context
+    )
+    text_body = template_env.get_template(config.email_text_template).render(
+        template_context
+    )
     subject = subject_env.from_string(config.email_subject_template).render(
-        name=client.name,
-        last_name=client.last_name,
-        display_name=client.display_name,
+        **template_context
     )
     return EmailMessage(
-        to_email=client.email,
-        to_name=client.name,
-        from_name=config.email_from_name,
-        from_address=config.email_from_address,
-        subject=subject,
-        html_body=html_body,
-        text_body=text_body,
-        inline_image=get_inline_image(),
-    )
-
-
-def _render_bp_call_reminder(
-    *,
-    config: Config,
-    client: Client,
-    html_env: Environment,
-    subject_env: Environment,
-) -> EmailMessage:
-    template_context = {
-        "display_name": client.display_name,
-        "birthday_date": _format_reminder_date(client.reminder_date),
-        "mobile_phone": client.mobile_phone or "No disponible",
-        "bp_status": BP_STATUS_LABEL,
-        "bp_follow_up_text": BP_FOLLOW_UP_TEXT,
-    }
-    html_body = html_env.get_template("bp_call_reminder.html").render(template_context)
-    text_body = html_env.get_template("bp_call_reminder.txt").render(template_context)
-    subject = subject_env.from_string(BP_REMINDER_SUBJECT_TEMPLATE).render(
-        name=client.name,
-        last_name=client.last_name,
-        display_name=client.display_name,
-    )
-    return EmailMessage(
-        to_email=config.bp_reminder_recipients.to_email,
-        to_name=config.bp_reminder_recipients.to_name,
+        to_email=renewal.client.email,
+        to_name=renewal.client.display_name,
         from_name=config.email_from_name,
         from_address=config.email_from_address,
         subject=subject,
         html_body=html_body,
         text_body=text_body,
         inline_image=None,
-        cc_emails=config.bp_reminder_recipients.cc_emails,
     )
 
 
-def _format_reminder_date(value: date) -> str:
-    return value.isoformat()
-
-
-def _log_dry_run(config: Config, client: Client) -> None:
-    if client.delivery_route == "bp_call_reminder":
-        cc_suffix = ""
-        if config.bp_reminder_recipients.cc_emails:
-            cc_suffix = f" (cc: {', '.join(config.bp_reminder_recipients.cc_emails)})"
-        LOGGER.info(
-            "[DRY RUN] would send BP call reminder for %s to %s%s",
-            client.display_name,
-            config.bp_reminder_recipients.to_email,
-            cc_suffix,
-        )
-        return
+def _log_dry_run(match: ReminderMatch) -> None:
+    renewal = match.renewal
     LOGGER.info(
-        "[DRY RUN] would send standard reminder to %s (%s)",
-        client.email,
-        client.name,
+        "[DRY RUN] would send renewal reminder to %s for policy %s stage %s",
+        renewal.client.email,
+        renewal.policy_number,
+        match.stage.name,
     )
-
-
-def _log_sent_message(client: Client, message: EmailMessage) -> None:
-    if client.delivery_route == "bp_call_reminder":
-        cc_suffix = ""
-        if message.cc_emails:
-            cc_suffix = f" (cc: {', '.join(message.cc_emails)})"
-        LOGGER.info(
-            "BP call reminder sent for %s to %s%s",
-            client.email,
-            message.to_email,
-            cc_suffix,
-        )
-        return
-    LOGGER.info("standard reminder sent to %s", client.email)
 
 
 def _with_increment(

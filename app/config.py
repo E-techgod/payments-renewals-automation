@@ -6,23 +6,25 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import IO, Literal
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from app.email_content import (
-    BPReminderRecipients,
-    BP_REMINDER_CC_ENV_NAME,
-    BP_REMINDER_TO_ADDRESS_ENV_NAME,
-    DEFAULT_BIRTHDAY_IMAGE_ALT,
-    DEFAULT_BIRTHDAY_IMAGE_MODE,
-    DEFAULT_BIRTHDAY_IMAGE_PATH,
-    DEFAULT_BIRTHDAY_IMAGE_URL,
-    DEFAULT_BIRTHDAY_IMAGE_WIDTH,
-    EMAIL_SUBJECT_TEMPLATE_DEFAULT,
-    build_bp_reminder_recipients,
+from app.reminder_config import (
+    DEFAULT_CLIENT_NAME_COLUMN,
+    DEFAULT_EMAIL_COLUMN,
+    DEFAULT_EMAIL_SUBJECT_TEMPLATE,
+    DEFAULT_FIRESTORE_COLLECTION_NAME,
+    DEFAULT_GOOGLE_SHEET_TAB,
+    DEFAULT_HTML_TEMPLATE_NAME,
+    DEFAULT_LAST_NAME_COLUMN,
+    DEFAULT_MOBILE_PHONE_COLUMN,
+    DEFAULT_POLICY_NUMBER_COLUMN,
+    DEFAULT_REMINDER_STAGES,
+    DEFAULT_RENEWAL_DATE_COLUMN,
+    DEFAULT_SERVICE_LINE_COLUMN,
+    DEFAULT_STATE_TABLE_NAME,
+    ReminderStage,
 )
 
-EMAIL_SUBJECT_TEMPLATE = ("EMAIL_SUBJECT_TEMPLATE", EMAIL_SUBJECT_TEMPLATE_DEFAULT)
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -50,7 +52,6 @@ except ImportError:
 
 
 SpreadsheetMode = Literal["google_sheet", "xlsx_drive"]
-BirthdayImageMode = Literal["none", "local", "url"]
 EmailProvider = Literal["gmail"]
 GoogleAuthMode = Literal["service_account", "oauth"]
 StateBackend = Literal["sqlite", "firestore"]
@@ -58,10 +59,9 @@ StateBackend = Literal["sqlite", "firestore"]
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _TEST_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_BIRTHDAY_IMAGE_PATH = _PROJECT_ROOT / DEFAULT_BIRTHDAY_IMAGE_PATH
-_DEFAULT_STATE_DB_PATH = _PROJECT_ROOT / "data/birthday_state.db"
+_DEFAULT_STATE_DB_PATH = _PROJECT_ROOT / "data/renewal_reminder_state.db"
 _DEFAULT_GOOGLE_OAUTH_TOKEN_PATH = _PROJECT_ROOT / "data/google_oauth_token.json"
-_DEFAULT_FIRESTORE_DATABASE = "birthday-automation"
+_DEFAULT_FIRESTORE_DATABASE = "payments-renewals-automation"
 
 
 class ConfigError(ValueError):
@@ -77,37 +77,35 @@ class Config:
     google_sheet_id: str
     google_sheet_tab: str
     google_drive_file_id: str
-    name_column: str
+    client_name_column: str
     last_name_column: str
-    gender_column: str
+    email_column: str
+    policy_number_column: str
+    renewal_date_column: str
     service_line_column: str
     mobile_phone_column: str
-    email_column: str
-    birthday_column: str
-    last_sent_year_column: str
     email_provider: str
     email_from_name: str
     email_from_address: str
     email_subject_template: str
+    email_html_template: str
+    email_text_template: str
+    reminder_stages: tuple[ReminderStage, ...]
     google_auth_mode: GoogleAuthMode
     google_credentials_file: Path | None
     google_impersonate_subject: str
     google_oauth_client_secrets_file: Path | None
     google_oauth_token_file: Path
     google_oauth_token_persist: bool
-    birthday_image_mode: BirthdayImageMode
-    birthday_image_path: Path
-    birthday_image_url: str
-    birthday_image_alt: str
-    birthday_image_width: int
     state_backend: StateBackend
     state_db_path: Path | None
     firestore_database: str
+    state_table_name: str
+    firestore_collection_name: str
     stale_claim_timeout_minutes: int
     retry_max_attempts: int
     retry_base_delay_seconds: float
     log_level: str
-    bp_reminder_recipients: BPReminderRecipients = BPReminderRecipients()
 
 
 def load_config() -> Config:
@@ -132,20 +130,6 @@ def load_config() -> Config:
         "GOOGLE_OAUTH_TOKEN_PERSIST",
         _get_env("GOOGLE_OAUTH_TOKEN_PERSIST", "true"),
     )
-    birthday_image_mode = _parse_image_mode(
-        _get_optional_override_env("BIRTHDAY_IMAGE_MODE")
-        or DEFAULT_BIRTHDAY_IMAGE_MODE
-    )
-    birthday_image_path = _load_birthday_image_path()
-    birthday_image_url = (
-        _get_optional_override_env("BIRTHDAY_IMAGE_URL")
-        or DEFAULT_BIRTHDAY_IMAGE_URL
-    )
-    birthday_image_width = _parse_positive_int(
-        "BIRTHDAY_IMAGE_WIDTH",
-        _get_optional_override_env("BIRTHDAY_IMAGE_WIDTH")
-        or str(DEFAULT_BIRTHDAY_IMAGE_WIDTH),
-    )
     state_backend = _parse_state_backend(_get_env("STATE_BACKEND", "sqlite"))
 
     google_sheet_id = _get_env("GOOGLE_SHEET_ID", "")
@@ -153,15 +137,6 @@ def load_config() -> Config:
     _validate_spreadsheet_requirements(
         spreadsheet_mode, google_sheet_id, google_drive_file_id
     )
-    _validate_image_settings(
-        birthday_image_mode, birthday_image_path, birthday_image_url
-    )
-
-    google_impersonate_subject = _parse_google_impersonate_subject(
-        _get_env("GOOGLE_IMPERSONATE_SUBJECT", ""),
-        email_from_address,
-    )
-    bp_reminder_recipients = _load_bp_reminder_recipients()
 
     return Config(
         app_timezone=app_timezone,
@@ -169,43 +144,43 @@ def load_config() -> Config:
         test_date=test_date,
         spreadsheet_mode=spreadsheet_mode,
         google_sheet_id=google_sheet_id,
-        google_sheet_tab=_get_env("GOOGLE_SHEET_TAB", ""),
+        google_sheet_tab=_get_env("GOOGLE_SHEET_TAB", DEFAULT_GOOGLE_SHEET_TAB),
         google_drive_file_id=google_drive_file_id,
-        name_column=_get_env("NAME_COLUMN", "Name"),
-        last_name_column=_get_env("LAST_NAME_COLUMN", "Last Name"),
-        gender_column=_get_env("GENDER_COLUMN", "Gender"),
-        service_line_column=_get_env("SERVICE_LINE_COLUMN", "Línea de servicio"),
-        mobile_phone_column=_get_env("MOBILE_PHONE_COLUMN", "Móvil"),
-        email_column=_get_env("EMAIL_COLUMN", "Email"),
-        birthday_column=_get_env("BIRTHDAY_COLUMN", "Birthday"),
-        last_sent_year_column=_get_env(
-            "LAST_SENT_YEAR_COLUMN", "Last Birthday Email Year"
+        client_name_column=_get_env("CLIENT_NAME_COLUMN", DEFAULT_CLIENT_NAME_COLUMN),
+        last_name_column=_get_env("LAST_NAME_COLUMN", DEFAULT_LAST_NAME_COLUMN),
+        email_column=_get_env("EMAIL_COLUMN", DEFAULT_EMAIL_COLUMN),
+        policy_number_column=_get_env(
+            "POLICY_NUMBER_COLUMN", DEFAULT_POLICY_NUMBER_COLUMN
         ),
+        renewal_date_column=_get_env("RENEWAL_DATE_COLUMN", DEFAULT_RENEWAL_DATE_COLUMN),
+        service_line_column=_get_env("SERVICE_LINE_COLUMN", DEFAULT_SERVICE_LINE_COLUMN),
+        mobile_phone_column=_get_env("MOBILE_PHONE_COLUMN", DEFAULT_MOBILE_PHONE_COLUMN),
         email_provider=email_provider,
         email_from_name=_get_env("EMAIL_FROM_NAME", ""),
         email_from_address=email_from_address,
-        email_subject_template=(
-            _get_optional_override_env(EMAIL_SUBJECT_TEMPLATE[0])
-            or EMAIL_SUBJECT_TEMPLATE[1]
+        email_subject_template=_get_env(
+            "EMAIL_SUBJECT_TEMPLATE", DEFAULT_EMAIL_SUBJECT_TEMPLATE
         ),
+        email_html_template=_get_env("EMAIL_HTML_TEMPLATE", DEFAULT_HTML_TEMPLATE_NAME),
+        email_text_template=_get_env("EMAIL_TEXT_TEMPLATE", "renewal_reminder.txt"),
+        reminder_stages=DEFAULT_REMINDER_STAGES,
         google_auth_mode=google_auth_mode,
         google_credentials_file=google_credentials_file,
-        google_impersonate_subject=google_impersonate_subject,
+        google_impersonate_subject=_parse_google_impersonate_subject(
+            _get_env("GOOGLE_IMPERSONATE_SUBJECT", ""),
+            email_from_address,
+        ),
         google_oauth_client_secrets_file=google_oauth_client_secrets_file,
         google_oauth_token_file=google_oauth_token_file,
         google_oauth_token_persist=google_oauth_token_persist,
-        birthday_image_mode=birthday_image_mode,
-        birthday_image_path=birthday_image_path,
-        birthday_image_url=birthday_image_url,
-        birthday_image_alt=(
-            _get_optional_override_env("BIRTHDAY_IMAGE_ALT")
-            or DEFAULT_BIRTHDAY_IMAGE_ALT
-        ),
-        birthday_image_width=birthday_image_width,
         state_backend=state_backend,
         state_db_path=_load_state_db_path(state_backend),
         firestore_database=_get_env(
             "FIRESTORE_DATABASE", _DEFAULT_FIRESTORE_DATABASE
+        ),
+        state_table_name=_get_env("STATE_TABLE_NAME", DEFAULT_STATE_TABLE_NAME),
+        firestore_collection_name=_get_env(
+            "FIRESTORE_COLLECTION_NAME", DEFAULT_FIRESTORE_COLLECTION_NAME
         ),
         stale_claim_timeout_minutes=_parse_positive_int(
             "STALE_CLAIM_TIMEOUT_MINUTES",
@@ -220,7 +195,6 @@ def load_config() -> Config:
             _get_env("RETRY_BASE_DELAY_SECONDS", "1.0"),
         ),
         log_level=_get_env("LOG_LEVEL", "INFO"),
-        bp_reminder_recipients=bp_reminder_recipients,
     )
 
 
@@ -239,13 +213,6 @@ def _get_optional_override_env(name: str) -> str | None:
     if not stripped:
         return None
     return stripped
-
-
-def _load_birthday_image_path() -> Path:
-    configured_path = _get_optional_override_env("BIRTHDAY_IMAGE_PATH")
-    if configured_path is None:
-        return _DEFAULT_BIRTHDAY_IMAGE_PATH
-    return _resolve_project_relative_path(configured_path)
 
 
 def _load_state_db_path(state_backend: StateBackend) -> Path | None:
@@ -290,16 +257,6 @@ def _parse_spreadsheet_mode(value: str) -> SpreadsheetMode:
     if value == "xlsx_drive":
         return "xlsx_drive"
     raise ConfigError("SPREADSHEET_MODE must be 'google_sheet' or 'xlsx_drive'")
-
-
-def _parse_image_mode(value: str) -> BirthdayImageMode:
-    if value == "none":
-        return "none"
-    if value == "local":
-        return "local"
-    if value == "url":
-        return "url"
-    raise ConfigError("BIRTHDAY_IMAGE_MODE must be 'none', 'local', or 'url'")
 
 
 def _parse_google_auth_mode(value: str) -> GoogleAuthMode:
@@ -361,16 +318,6 @@ def _parse_google_impersonate_subject(value: str, email_from_address: str) -> st
     return _parse_email_value("GOOGLE_IMPERSONATE_SUBJECT", stripped_value)
 
 
-def _load_bp_reminder_recipients() -> BPReminderRecipients:
-    try:
-        return build_bp_reminder_recipients(
-            _get_env(BP_REMINDER_TO_ADDRESS_ENV_NAME, ""),
-            _get_env(BP_REMINDER_CC_ENV_NAME, ""),
-        )
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
-
-
 def _parse_timezone(value: str) -> str:
     try:
         ZoneInfo(value)
@@ -427,24 +374,4 @@ def _validate_spreadsheet_requirements(
     if spreadsheet_mode == "xlsx_drive" and not google_drive_file_id.strip():
         raise ConfigError(
             "GOOGLE_DRIVE_FILE_ID is required when SPREADSHEET_MODE=xlsx_drive"
-        )
-
-
-def _validate_image_settings(
-    image_mode: BirthdayImageMode,
-    image_path: Path,
-    image_url: str,
-) -> None:
-    if image_mode == "none":
-        return
-    if image_mode == "local":
-        if not image_path.is_file():
-            raise ConfigError(
-                "BIRTHDAY_IMAGE_PATH must point to an existing file when BIRTHDAY_IMAGE_MODE=local"
-            )
-        return
-    parsed = urlparse(image_url)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ConfigError(
-            "BIRTHDAY_IMAGE_URL must be an https:// URL when BIRTHDAY_IMAGE_MODE=url"
         )

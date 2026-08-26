@@ -2,89 +2,35 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-
-from app.email_content import DEFAULT_SALUTATION, FEMALE_SALUTATION, MALE_SALUTATION
-from app.models import Client, resolve_salutation
+from app.models import Client, PolicyRenewal, build_display_name
+from app.reminder_config import ReminderStage
 
 
-@pytest.mark.parametrize(
-    "gender",
-    ["Mujer", "Femenino", "F", "Female"],
-)
-def test_resolve_salutation_female_values_map_to_estimada(gender: str) -> None:
-    assert resolve_salutation(gender) == FEMALE_SALUTATION
+def test_build_display_name_normalizes_whitespace() -> None:
+    assert build_display_name("  Ana  ", "  Perez  ") == "Ana Perez"
 
 
-@pytest.mark.parametrize(
-    "gender",
-    ["Hombre", "Masculino", "M", "Male"],
-)
-def test_resolve_salutation_male_values_map_to_estimado(gender: str) -> None:
-    assert resolve_salutation(gender) == MALE_SALUTATION
+def test_client_display_name_uses_last_name_when_present() -> None:
+    client = Client(name="Ana", last_name="Perez", email="ana@example.com")
+
+    assert client.display_name == "Ana Perez"
 
 
-def test_resolve_salutation_missing_gender_defaults_to_estimado_a() -> None:
-    assert resolve_salutation(None) == DEFAULT_SALUTATION
-
-
-def test_resolve_salutation_empty_gender_defaults_to_estimado_a() -> None:
-    assert resolve_salutation("") == DEFAULT_SALUTATION
-
-
-def test_resolve_salutation_unknown_gender_defaults_to_estimado_a() -> None:
-    assert resolve_salutation("Nonbinary") == DEFAULT_SALUTATION
-
-
-@pytest.mark.parametrize(
-    ("gender", "expected"),
-    [
-        ("mujer", FEMALE_SALUTATION),
-        ("MUJER", FEMALE_SALUTATION),
-        ("MuJeR", FEMALE_SALUTATION),
-        ("male", MALE_SALUTATION),
-        ("MALE", MALE_SALUTATION),
-        ("MaLe", MALE_SALUTATION),
-    ],
-)
-def test_resolve_salutation_is_case_insensitive(gender: str, expected: str) -> None:
-    assert resolve_salutation(gender) == expected
-
-
-@pytest.mark.parametrize(
-    ("gender", "expected"),
-    [
-        ("  Mujer  ", FEMALE_SALUTATION),
-        ("\tFemale\n", FEMALE_SALUTATION),
-        ("  Hombre  ", MALE_SALUTATION),
-        ("\tMale\n", MALE_SALUTATION),
-        ("   ", DEFAULT_SALUTATION),
-    ],
-)
-def test_resolve_salutation_strips_surrounding_whitespace(
-    gender: str, expected: str
-) -> None:
-    assert resolve_salutation(gender) == expected
-
-
-def test_client_salutation_property_reflects_gender() -> None:
-    client = Client(
-        name="Test",
-        email="test@example.com",
-        reminder_date=date(2000, 1, 1),
-        row_index=2,
-        gender="Femenino",
-    )
-
-    assert client.salutation == FEMALE_SALUTATION
-
-
-def test_client_salutation_property_defaults_when_gender_missing() -> None:
-    client = Client(
-        name="Test",
-        email="test@example.com",
-        reminder_date=date(2000, 1, 1),
+def test_policy_renewal_keeps_client_policy_and_due_date() -> None:
+    client = Client(name="Ana", email="ana@example.com")
+    renewal = PolicyRenewal(
+        client=client,
+        policy_number="POL-123",
+        renewal_date=date(2026, 9, 25),
         row_index=2,
     )
 
-    assert client.salutation == DEFAULT_SALUTATION
+    assert renewal.client.email == "ana@example.com"
+    assert renewal.policy_number == "POL-123"
+    assert renewal.renewal_date == date(2026, 9, 25)
+
+
+def test_reminder_stage_days_before_due_is_derived_from_offset() -> None:
+    assert ReminderStage("30_days", "30 days before", -30).days_before_due == 30
+    assert ReminderStage("due_today", "Due today", 0).days_before_due == 0
+    assert ReminderStage("grace", "Grace", 3).days_before_due is None

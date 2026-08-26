@@ -35,30 +35,23 @@ def resolve_headers(raw_header_row: list[str], config: Config) -> dict[str, int]
         normalized_headers[normalized] = index
 
     resolved = {
-        config.name_column: _require_header(config.name_column, normalized_headers),
+        config.client_name_column: _require_header(
+            config.client_name_column, normalized_headers
+        ),
         config.email_column: _require_header(config.email_column, normalized_headers),
-        config.birthday_column: _require_header(
-            config.birthday_column, normalized_headers
+        config.policy_number_column: _require_header(
+            config.policy_number_column, normalized_headers
+        ),
+        config.renewal_date_column: _require_header(
+            config.renewal_date_column, normalized_headers
         ),
     }
-
-    optional_last_sent_year_index = normalized_headers.get(
-        _normalize_header(config.last_sent_year_column)
-    )
-    if optional_last_sent_year_index is not None:
-        resolved[config.last_sent_year_column] = optional_last_sent_year_index
 
     optional_last_name_index = normalized_headers.get(
         _normalize_header(config.last_name_column)
     )
     if optional_last_name_index is not None:
         resolved[config.last_name_column] = optional_last_name_index
-
-    optional_gender_index = normalized_headers.get(
-        _normalize_header(config.gender_column)
-    )
-    if optional_gender_index is not None:
-        resolved[config.gender_column] = optional_gender_index
 
     optional_service_line_index = normalized_headers.get(
         _normalize_header(config.service_line_column)
@@ -94,7 +87,7 @@ def row_has_client_identity(
 ) -> bool:
     return any(
         _cell_has_value(raw_row, resolved_headers.get(column_name))
-        for column_name in (config.name_column, config.last_name_column)
+        for column_name in (config.client_name_column, config.last_name_column)
     )
 
 
@@ -107,16 +100,13 @@ def _require_header(logical_name: str, normalized_headers: dict[str, int]) -> in
 
 def _validate_distinct_configured_headers(config: Config) -> None:
     configured_headers = [
-        config.name_column,
+        config.client_name_column,
         config.email_column,
-        config.birthday_column,
+        config.policy_number_column,
+        config.renewal_date_column,
     ]
-    if _normalize_header(config.last_sent_year_column):
-        configured_headers.append(config.last_sent_year_column)
     if _normalize_header(config.last_name_column):
         configured_headers.append(config.last_name_column)
-    if _normalize_header(config.gender_column):
-        configured_headers.append(config.gender_column)
     if _normalize_header(config.service_line_column):
         configured_headers.append(config.service_line_column)
     if _normalize_header(config.mobile_phone_column):

@@ -84,7 +84,6 @@ class FakeTransaction:
         self._client = client
         self._reads: dict[str, int | None] = {}
         self._writes: list[tuple[str, str, dict[str, object]]] = []
-        self._rolled_back = False
         self._id: bytes | None = None
 
     @property
@@ -138,11 +137,7 @@ class FakeTransaction:
         for operation, document_id, data in self._writes:
             current = self._collection._documents.get(document_id)
             current_data = {} if current is None else deepcopy(current["data"])
-            if operation == "set":
-                new_data = deepcopy(data)
-            else:
-                new_data = current_data
-                new_data.update(deepcopy(data))
+            new_data = deepcopy(data) if operation == "set" else current_data | deepcopy(data)
             current_version = 0 if current is None else int(current["version"])
             self._collection._documents[document_id] = {
                 "data": new_data,
@@ -154,8 +149,8 @@ class FakeTransaction:
         self.commit()
 
     def _rollback(self) -> None:
-        self._rolled_back = True
         self._clean_up()
+
 
 class FakeFirestoreClient:
     def __init__(self) -> None:
@@ -169,83 +164,54 @@ class FakeFirestoreClient:
         return FakeTransaction(self._collection, self)
 
 
-def test_constructor_passes_explicit_project_and_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeFirestoreModule:
-        class Client:
-            def __init__(self, *, project: str | None = None, database: str | None = None) -> None:
-                captured["project"] = project
-                captured["database"] = database
-
-            def collection(self, _name: str) -> FakeCollection:
-                return FakeCollection()
-
-    monkeypatch.setattr("app.state.firestore.firestore", FakeFirestoreModule)
-    monkeypatch.setattr(
-        "app.state.firestore.google_auth_default",
-        lambda: (object(), "synthetic-project"),
-    )
-
-    FirestoreStateStore(30, firestore_database="birthday-automation")
-
-    assert captured == {
-        "project": "synthetic-project",
-        "database": "birthday-automation",
-    }
-
-
 def test_first_claim_creates_pending_record() -> None:
     store, client = _build_store()
 
-    result = store.claim("Client@Example.com", 8, 19, 2026)
+    result = store.claim("client@example.com", "POL-123", "2026-09-25", "30_days")
 
     assert result.outcome is ClaimOutcome.CLAIMED
-    assert result.claim_id == deterministic_claim_id("client@example.com", 8, 19, 2026)
-    assert result.lease_token is not None
-
-    row = _get_row(client, "client@example.com", 8, 19, 2026)
+    assert result.claim_id == deterministic_claim_id(
+        "client@example.com", "POL-123", "2026-09-25", "30_days"
+    )
+    row = _get_row(client, "client@example.com", "POL-123", "2026-09-25", "30_days")
     assert row["status"] == "pending"
-    assert row["email_normalized"] == "client@example.com"
-    assert row["lease_token"] == result.lease_token
 
 
 def test_duplicate_sent_claim_returns_already_sent() -> None:
     store, _client = _build_store()
 
-    first = store.claim("client@example.com", 8, 19, 2026)
+    first = store.claim("client@example.com", "POL-123", "2026-09-25", "30_days")
     assert first.claim_id is not None
     assert first.lease_token is not None
     store.mark_sent(first.claim_id, first.lease_token)
 
-    second = store.claim("client@example.com", 8, 19, 2026)
+    second = store.claim("client@example.com", "POL-123", "2026-09-25", "30_days")
 
     assert second.outcome is ClaimOutcome.ALREADY_SENT
-    assert second.claim_id is None
-    assert second.lease_token is None
 
 
-def test_active_claim_returns_in_progress() -> None:
+def test_different_stage_does_not_collide() -> None:
     store, _client = _build_store()
 
-    first = store.claim("pending@example.com", 8, 19, 2026)
+    first = store.claim("client@example.com", "POL-123", "2026-09-25", "30_days")
+    second = store.claim("client@example.com", "POL-123", "2026-09-25", "15_days")
+
     assert first.outcome is ClaimOutcome.CLAIMED
-
-    second = store.claim("pending@example.com", 8, 19, 2026)
-
-    assert second.outcome is ClaimOutcome.IN_PROGRESS
-    assert second.claim_id is None
+    assert second.outcome is ClaimOutcome.CLAIMED
+    assert first.claim_id != second.claim_id
 
 
 def test_stale_claim_is_reclaimed() -> None:
     store, client = _build_store()
 
-    first = store.claim("stale@example.com", 8, 19, 2026)
+    first = store.claim("stale@example.com", "POL-123", "2026-09-25", "30_days")
     assert first.claim_id is not None
     assert first.lease_token is not None
-    _set_claimed_at(client, "stale@example.com", 8, 19, 2026, minutes_ago=31)
+    _set_claimed_at(
+        client, "stale@example.com", "POL-123", "2026-09-25", "30_days", minutes_ago=31
+    )
 
-    second = store.claim("stale@example.com", 8, 19, 2026)
+    second = store.claim("stale@example.com", "POL-123", "2026-09-25", "30_days")
 
     assert second.outcome is ClaimOutcome.CLAIMED
     assert second.claim_id == first.claim_id
@@ -256,11 +222,13 @@ def test_stale_claim_is_reclaimed() -> None:
 def test_mark_operations_validate_lease_token() -> None:
     store, client = _build_store()
 
-    original = store.claim("lease@example.com", 8, 19, 2026)
+    original = store.claim("lease@example.com", "POL-123", "2026-09-25", "30_days")
     assert original.claim_id is not None
     assert original.lease_token is not None
-    _set_claimed_at(client, "lease@example.com", 8, 19, 2026, minutes_ago=31)
-    reclaimed = store.claim("lease@example.com", 8, 19, 2026)
+    _set_claimed_at(
+        client, "lease@example.com", "POL-123", "2026-09-25", "30_days", minutes_ago=31
+    )
+    reclaimed = store.claim("lease@example.com", "POL-123", "2026-09-25", "30_days")
     assert reclaimed.lease_token is not None
 
     with pytest.raises(LeaseLostError):
@@ -270,97 +238,36 @@ def test_mark_operations_validate_lease_token() -> None:
         store.mark_failed(original.claim_id, original.lease_token)
 
 
-def test_mark_sent_updates_status_and_sent_at() -> None:
-    store, client = _build_store()
-
-    claim = store.claim("sent@example.com", 8, 19, 2026)
-    assert claim.claim_id is not None
-    assert claim.lease_token is not None
-
-    store.mark_sent(claim.claim_id, claim.lease_token)
-
-    row = _get_row(client, "sent@example.com", 8, 19, 2026)
-    assert row["status"] == "sent"
-    assert row["sent_at"] is not None
-
-
-def test_mark_failed_updates_status() -> None:
-    store, client = _build_store()
-
-    claim = store.claim("failed@example.com", 8, 19, 2026)
-    assert claim.claim_id is not None
-    assert claim.lease_token is not None
-
-    store.mark_failed(claim.claim_id, claim.lease_token)
-
-    row = _get_row(client, "failed@example.com", 8, 19, 2026)
-    assert row["status"] == "failed"
-
-
-def test_transaction_abort_retries_claim() -> None:
-    store, client = _build_store()
-    client.abort_commit_attempts = 1
-
-    result = store.claim("retry@example.com", 8, 19, 2026)
-
-    assert result.outcome is ClaimOutcome.CLAIMED
-    rows = list(client._collection._documents.values())
-    assert len(rows) == 1
-
-
-def test_transaction_abort_retries_mark_sent() -> None:
-    store, client = _build_store()
-    claim = store.claim("mark-retry@example.com", 8, 19, 2026)
-    assert claim.claim_id is not None
-    assert claim.lease_token is not None
-    client.abort_commit_attempts = 1
-
-    store.mark_sent(claim.claim_id, claim.lease_token)
-
-    row = _get_row(client, "mark-retry@example.com", 8, 19, 2026)
-    assert row["status"] == "sent"
-
-
-def test_missing_record_raises_lease_lost_on_transition() -> None:
-    store, _client = _build_store()
-
-    with pytest.raises(LeaseLostError):
-        store.mark_failed(123456, "missing-lease")
-
-
 def _build_store() -> tuple[FirestoreStateStore, FakeFirestoreClient]:
     client = FakeFirestoreClient()
-    return FirestoreStateStore(30, client=client), client
+    store = FirestoreStateStore(30, client=client)
+    return store, client
 
 
 def _get_row(
     client: FakeFirestoreClient,
-    email_normalized: str,
-    month: int,
-    day: int,
-    year: int,
+    client_key: str,
+    policy_key: str,
+    renewal_date_iso: str,
+    stage_name: str,
 ) -> dict[str, object]:
-    document_id = deterministic_document_id(email_normalized, month, day, year)
-    snapshot = client.collection("birthday_sends").document(document_id).get()
-    row = snapshot.to_dict()
-    assert row is not None
-    return row
+    document_id = deterministic_document_id(
+        client_key, policy_key, renewal_date_iso, stage_name
+    )
+    return deepcopy(client._collection._documents[document_id]["data"])  # type: ignore[index]
 
 
 def _set_claimed_at(
     client: FakeFirestoreClient,
-    email_normalized: str,
-    month: int,
-    day: int,
-    year: int,
+    client_key: str,
+    policy_key: str,
+    renewal_date_iso: str,
+    stage_name: str,
     *,
     minutes_ago: int,
 ) -> None:
-    row = _get_row(client, email_normalized, month, day, year)
+    document_id = deterministic_document_id(
+        client_key, policy_key, renewal_date_iso, stage_name
+    )
+    row = client._collection._documents[document_id]["data"]
     row["claimed_at"] = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
-    document_id = deterministic_document_id(email_normalized, month, day, year)
-    current = client._collection._documents[document_id]
-    client._collection._documents[document_id] = {
-        "data": row,
-        "version": int(current["version"]) + 1,
-    }

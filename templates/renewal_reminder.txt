@@ -1,0 +1,12 @@
+Hola {{ client_name }},
+
+Este es un recordatorio de renovación para la póliza {{ policy_number }}.
+
+Fecha de renovación: {{ renewal_date }}
+Etapa del recordatorio: {{ reminder_label }}
+Días restantes: {{ days_remaining }}
+
+Si ya realizaste el pago o la renovación, por favor ignora este mensaje. Si necesitas apoyo, responde a este correo.
+
+Saludos,
+{{ from_name }}

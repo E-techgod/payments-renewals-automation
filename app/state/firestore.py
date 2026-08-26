@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover
         pass
 
 
-_DEFAULT_COLLECTION_NAME = "birthday_sends"
+_DEFAULT_COLLECTION_NAME = "renewal_reminder_sends"
 _MAX_TRANSACTION_RETRIES = 3
 _T = TypeVar("_T")
 
@@ -56,10 +56,27 @@ class FirestoreStateStore:
         self._collection = client.collection(collection_name)
         self._stale_claim_timeout = timedelta(minutes=stale_claim_timeout_minutes)
 
-    def claim(self, email: str, month: int, day: int, year: int) -> ClaimResult:
-        email_normalized = normalize_email(email)
-        claim_id = deterministic_claim_id(email_normalized, month, day, year)
-        document_id = deterministic_document_id(email_normalized, month, day, year)
+    def claim(
+        self,
+        client_key: str,
+        policy_key: str,
+        renewal_date_iso: str,
+        stage_name: str,
+    ) -> ClaimResult:
+        normalized_client_key = normalize_email(client_key)
+        normalized_policy_key = policy_key.strip()
+        claim_id = deterministic_claim_id(
+            normalized_client_key,
+            normalized_policy_key,
+            renewal_date_iso,
+            stage_name,
+        )
+        document_id = deterministic_document_id(
+            normalized_client_key,
+            normalized_policy_key,
+            renewal_date_iso,
+            stage_name,
+        )
         now = datetime.now(UTC)
         now_iso = isoformat(now)
 
@@ -72,10 +89,10 @@ class FirestoreStateStore:
                     document,
                     {
                         "claim_id": claim_id,
-                        "email_normalized": email_normalized,
-                        "birthday_month": month,
-                        "birthday_day": day,
-                        "send_year": year,
+                        "client_key": normalized_client_key,
+                        "policy_key": normalized_policy_key,
+                        "renewal_date": renewal_date_iso,
+                        "reminder_stage": stage_name,
                         "status": "pending",
                         "claimed_at": now_iso,
                         "lease_token": lease_token,

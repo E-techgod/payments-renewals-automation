@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="es">
+  <body style="font-family: Helvetica, Arial, sans-serif; line-height: 1.5; color: #1f2937; max-width: 560px; margin: 0 auto; padding: 24px 16px; background: #ffffff;">
+    <p style="margin: 0 0 16px 0; font-size: 16px;">Hola {{ client_name }},</p>
+    <p style="margin: 0 0 16px 0;">
+      Este es un recordatorio de renovación para la póliza <strong>{{ policy_number }}</strong>.
+    </p>
+    <ul style="margin: 0 0 16px 20px; padding: 0;">
+      <li><strong>Fecha de renovación:</strong> {{ renewal_date }}</li>
+      <li><strong>Etapa del recordatorio:</strong> {{ reminder_label }}</li>
+      <li><strong>Días restantes:</strong> {{ days_remaining }}</li>
+    </ul>
+    <p style="margin: 0 0 16px 0;">
+      Si ya realizaste el pago o la renovación, por favor ignora este mensaje. Si necesitas apoyo, responde a este correo.
+    </p>
+    <p style="margin: 0;">Saludos,<br><strong>{{ from_name }}</strong></p>
+  </body>
+</html>
